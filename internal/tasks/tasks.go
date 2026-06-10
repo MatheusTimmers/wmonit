@@ -11,10 +11,11 @@ import (
 )
 
 type Task struct {
-	Text    string    `json:"text"`
-	Due     string    `json:"due,omitempty"` // YYYY-MM-DD
-	Done    bool      `json:"done"`
-	Created time.Time `json:"created"`
+	Text    string     `json:"text"`
+	Due     string     `json:"due,omitempty"` // YYYY-MM-DD
+	Done    bool       `json:"done"`
+	Created time.Time  `json:"created"`
+	DoneAt  *time.Time `json:"done_at,omitempty"` // quando foi concluída
 }
 
 type Store struct {
@@ -66,6 +67,12 @@ func (s *Store) Add(input string) {
 func (s *Store) ToggleAt(i int) {
 	if i >= 0 && i < len(s.Tasks) {
 		s.Tasks[i].Done = !s.Tasks[i].Done
+		if s.Tasks[i].Done {
+			now := time.Now()
+			s.Tasks[i].DoneAt = &now
+		} else {
+			s.Tasks[i].DoneAt = nil
+		}
 	}
 }
 

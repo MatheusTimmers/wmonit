@@ -40,12 +40,17 @@ arquivo): `WMONIT_GITLAB_URL`, `WMONIT_GITLAB_TOKEN`, `WMONIT_JIRA_URL`,
 | ---------------- | ------------------------------------- |
 | `1`–`5` / `tab`  | troca de aba (Hoje, Desempenho, GitLab, Jira, Tarefas) |
 | `j`/`k`, setas, PgUp/PgDn | rola o conteúdo da aba       |
+| `g`              | abre o relatório do dia (esc/q volta) |
 | `r`              | atualiza os dados agora               |
 | `q`              | sai                                   |
 | `a`              | (Tarefas) adiciona tarefa             |
 | `espaço` / `x`   | (Tarefas) marca/desmarca como feita   |
 | `d`              | (Tarefas) apaga a tarefa selecionada  |
 | `j`/`k` ou setas | (Tarefas) move o cursor               |
+
+A tecla **`g`** abre o **relatório do dia**: o que você concluiu hoje — MRs
+mergeados e issues resolvidas — além das tarefas marcadas como feitas no dia.
+É uma visão à parte, rolável; `esc` ou `q` volta para as abas.
 
 A aba **Desempenho** traz: tabela comparando esta semana, o mês atual e o
 mês anterior (MRs mergeados e issues resolvidas); tendência melhor/pior do

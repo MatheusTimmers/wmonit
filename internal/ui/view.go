@@ -118,16 +118,21 @@ func fmtNum(p float64) string {
 func (m Model) View() string {
 	var b strings.Builder
 
-	var tabsRow []string
-	for i, name := range tabNames {
-		label := fmt.Sprintf("[%d] %s", i+1, name)
-		if tab(i) == m.tab {
-			tabsRow = append(tabsRow, tabActive.Render(label))
-		} else {
-			tabsRow = append(tabsRow, tabInactive.Render(label))
+	if m.report {
+		b.WriteString(tabActive.Render("📋 Relatório do dia") +
+			tabInactive.Render(m.reportSummary()))
+	} else {
+		var tabsRow []string
+		for i, name := range tabNames {
+			label := fmt.Sprintf("[%d] %s", i+1, name)
+			if tab(i) == m.tab {
+				tabsRow = append(tabsRow, tabActive.Render(label))
+			} else {
+				tabsRow = append(tabsRow, tabInactive.Render(label))
+			}
 		}
+		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, tabsRow...))
 	}
-	b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, tabsRow...))
 	b.WriteString("\n")
 
 	vp := m.vp
@@ -141,6 +146,9 @@ func (m Model) View() string {
 // content gera o texto da aba ativa; é usado tanto para desenhar quanto
 // para alimentar o viewport do modelo (sem isso a rolagem não tem altura).
 func (m Model) content() string {
+	if m.report {
+		return m.viewReport()
+	}
 	switch m.tab {
 	case tabHoje:
 		return m.viewHoje()
@@ -157,8 +165,10 @@ func (m Model) content() string {
 }
 
 func (m Model) footer(vp interface{ ScrollPercent() float64 }) string {
-	help := "tab/1-5 abas · j/k rolar · r atualizar · q sair"
-	if m.tab == tabTarefas {
+	help := "tab/1-5 abas · g relatório do dia · j/k rolar · r atualizar · q sair"
+	if m.report {
+		help = "esc/q voltar · j/k rolar · r atualizar"
+	} else if m.tab == tabTarefas {
 		if m.adding {
 			help = "enter salvar · esc cancelar"
 		} else {

@@ -53,6 +53,7 @@ type Model struct {
 
 	cursor  int
 	adding  bool
+	report  bool
 	input   textinput.Model
 	spin    spinner.Model
 	vp      viewport.Model
@@ -124,6 +125,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.adding {
 			return m.updateAdding(msg)
 		}
+		if m.report {
+			return m.updateReport(msg)
+		}
 		return m.updateKeys(msg)
 	}
 	return m, nil
@@ -149,10 +153,33 @@ func (m Model) updateAdding(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func (m Model) updateReport(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q", "g":
+		m.report = false
+		m.vp.GotoTop()
+		return m, nil
+	case "ctrl+c":
+		return m, tea.Quit
+	case "r":
+		m.loading = 2
+		return m, m.fetchAll()
+	}
+	// As demais teclas rolam o relatório no viewport.
+	m.vp.SetContent(m.content())
+	var cmd tea.Cmd
+	m.vp, cmd = m.vp.Update(msg)
+	return m, cmd
+}
+
 func (m Model) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "q", "ctrl+c":
 		return m, tea.Quit
+	case "g":
+		m.report = true
+		m.vp.GotoTop()
+		return m, nil
 	case "1", "2", "3", "4", "5":
 		m.tab = tab(msg.String()[0] - '1')
 		m.cursor = 0
