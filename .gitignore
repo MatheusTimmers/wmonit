@@ -1,0 +1,7 @@
+# Binaries
+/wmonit
+/wmonit.exe
+wmonit.exe.txt
+
+# Local configuration
+config.toml

@@ -1,0 +1,26 @@
+# Copie para ~/.config/wmonit/config.toml e preencha.
+# Tokens também podem vir de variáveis de ambiente (têm precedência):
+#   WMONIT_GITLAB_URL, WMONIT_GITLAB_TOKEN
+#   WMONIT_JIRA_URL, WMONIT_JIRA_TOKEN, WMONIT_JIRA_EMAIL
+
+[gitlab]
+url = "https://gitlab.nelogica.com.br" # ajuste para a URL real do GitLab da Nelogica
+token = ""                             # Personal Access Token com scope read_api
+
+[jira]
+url = "https://jira.nelogica.com.br" # ajuste para a URL real do Jira
+auth = "bearer"                      # "bearer" para Jira Server/DC (PAT) · "basic" para Jira Cloud
+email = ""                           # só necessário com auth = "basic"
+token = ""                           # PAT (Server/DC) ou API token (Cloud)
+# Ordem em que os grupos de status aparecem na aba Jira (use os nomes
+# exatos dos status do seu projeto; comparação ignora maiúsculas).
+status_order = [
+  "Análise em Progresso",
+  "Em Andamento",
+  "Revisão 1",
+  "Em Deploy",
+]
+# Id do campo de complexidade da issue, usado na aba Desempenho
+# (ex.: "customfield_10106"). Vazio = detecção automática pelo nome
+# (procura um campo cujo nome contenha "complex").
+complexity_field = ""
