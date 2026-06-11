@@ -11,6 +11,7 @@ import (
 
 	"github.com/timmers/wmonit/internal/config"
 	"github.com/timmers/wmonit/internal/gitlab"
+	"github.com/timmers/wmonit/internal/history"
 	"github.com/timmers/wmonit/internal/jira"
 	"github.com/timmers/wmonit/internal/tasks"
 )
@@ -45,6 +46,7 @@ type reminderMsg time.Time
 type Model struct {
 	cfg   config.Config
 	store *tasks.Store
+	hist  *history.Store
 
 	tab     tab
 	gl      *gitlab.Summary
@@ -70,7 +72,8 @@ func New(cfg config.Config, store *tasks.Store) Model {
 	ti := textinput.New()
 	ti.Placeholder = "descrição (opcional no final: @today, @tomorrow, @2026-06-15; hora: @today 15:00)"
 	sp := spinner.New(spinner.WithSpinner(spinner.Dot))
-	return Model{cfg: cfg, store: store, input: ti, spin: sp, vp: viewport.New(80, 20), loading: 2, notified: map[string]bool{}}
+	hist, _ := history.Load() // sem histórico ainda não é erro fatal
+	return Model{cfg: cfg, store: store, hist: hist, input: ti, spin: sp, vp: viewport.New(80, 20), loading: 2, notified: map[string]bool{}}
 }
 
 func (m Model) Init() tea.Cmd {
@@ -112,6 +115,31 @@ func (m Model) checkReminders() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
+// recordToday salva no histórico o que já foi entregue hoje. Roda a cada
+// atualização; como Upsert substitui o registro do dia, os números só
+// crescem ao longo do dia.
+func (m *Model) recordToday() {
+	if m.hist == nil || m.gl == nil || m.ji == nil {
+		return
+	}
+	now := time.Now()
+	today := now.Format("2006-01-02")
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+	tsk := 0
+	for _, t := range m.store.Tasks {
+		if t.Done && t.DoneAt != nil && t.DoneAt.Format("2006-01-02") == today {
+			tsk++
+		}
+	}
+	m.hist.Upsert(history.Day{
+		Date:   today,
+		MRs:    len(mergedIn(m.gl.Merged, dayStart, now)),
+		Issues: len(resolvedIn(m.ji.Resolved, today, today)),
+		Tasks:  tsk,
+	})
+	m.hist.Save()
+}
+
 func (m Model) fetchAll() tea.Cmd {
 	cfg := m.cfg
 	return tea.Batch(
@@ -151,12 +179,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading--
 		m.gl, m.glErr = msg.sum, msg.err
 		m.updated = time.Now()
+		m.recordToday()
 		return m, nil
 
 	case jiMsg:
 		m.loading--
 		m.ji, m.jiErr = msg.sum, msg.err
 		m.updated = time.Now()
+		m.recordToday()
 		return m, nil
 
 	case tea.KeyMsg:

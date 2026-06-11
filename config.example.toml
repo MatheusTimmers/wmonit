@@ -24,3 +24,9 @@ status_order = [
 # (ex.: "customfield_10106"). Vazio = detecção automática pelo nome
 # (procura um campo cujo nome contenha "complex").
 complexity_field = ""
+
+# Metas semanais opcionais — viram barras de progresso na aba Desempenho.
+# Deixe 0 (ou omita a seção) para não exibir.
+[goals]
+weekly_mrs = 0
+weekly_issues = 0
