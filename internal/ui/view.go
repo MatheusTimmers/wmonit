@@ -449,6 +449,25 @@ func barCell(style lipgloss.Style, n, maxN, width int) string {
 	return style.Render(fmt.Sprintf("%-*s", width, strings.Repeat("▇", w))) + fmt.Sprintf(" %2d", n)
 }
 
+// goalBar desenha o progresso de uma meta semanal: barra proporcional,
+// "atual/meta" e um ✓ quando batida.
+func goalBar(label string, cur, goal int) string {
+	const w = 12
+	fill := cur * w / goal
+	if fill > w {
+		fill = w
+	}
+	if fill < 0 {
+		fill = 0
+	}
+	bar := barStyle.Render(fmt.Sprintf("%-*s", w, strings.Repeat("▇", fill)))
+	mark := ""
+	if cur >= goal {
+		mark = okStyle.Render(" ✓")
+	}
+	return fmt.Sprintf("  %-16s %s %d/%d%s", label, bar, cur, goal, mark)
+}
+
 func (m Model) viewDesempenho() string {
 	var b strings.Builder
 	b.WriteString(section.Render("📈 Desempenho") + "\n\n")
@@ -504,6 +523,23 @@ func (m Model) viewDesempenho() string {
 		b.WriteString(fmt.Sprintf("  %-20s %14d %8d\n", r.label, mrs, n))
 	}
 	b.WriteString("\n")
+
+	// Metas semanais e sequência de dias com entrega.
+	if m.hist != nil {
+		b.WriteString(section.Render("🎯 Metas e sequência") + "\n")
+		if streak := m.hist.Streak(now); streak > 0 {
+			b.WriteString(okStyle.Render(fmt.Sprintf("  🔥 sequência: %d dias úteis com entrega", streak)) + "\n")
+		} else {
+			b.WriteString(dim.Render("  sem sequência ativa — entregue algo para começar") + "\n")
+		}
+		if g := m.cfg.Goals.WeeklyMRs; g > 0 && m.gl != nil {
+			b.WriteString(goalBar("MRs na semana", len(mergedIn(m.gl.Merged, weekStart, now)), g) + "\n")
+		}
+		if g := m.cfg.Goals.WeeklyIssues; g > 0 && m.ji != nil {
+			b.WriteString(goalBar("Issues na semana", len(resolvedIn(m.ji.Resolved, weekStart.Format("2006-01-02"), today)), g) + "\n")
+		}
+		b.WriteString("\n")
+	}
 
 	// Tendência: dia, semana e mês, cada um contra o período anterior
 	// equivalente (mesmo nº de dias decorridos), para um termômetro justo.

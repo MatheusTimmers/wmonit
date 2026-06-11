@@ -26,9 +26,16 @@ type Jira struct {
 	ComplexityField string `toml:"complexity_field"`
 }
 
+// Goals define metas semanais opcionais; 0 desativa a barra de progresso.
+type Goals struct {
+	WeeklyMRs    int `toml:"weekly_mrs"`
+	WeeklyIssues int `toml:"weekly_issues"`
+}
+
 type Config struct {
 	GitLab GitLab `toml:"gitlab"`
 	Jira   Jira   `toml:"jira"`
+	Goals  Goals  `toml:"goals"`
 }
 
 func Path() string {
