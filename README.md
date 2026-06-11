@@ -39,10 +39,13 @@ arquivo): `WMONIT_GITLAB_URL`, `WMONIT_GITLAB_TOKEN`, `WMONIT_JIRA_URL`,
 | Tecla            | Ação                                  |
 | ---------------- | ------------------------------------- |
 | `1`–`5` / `tab`  | troca de aba (Hoje, Desempenho, GitLab, Jira, Tarefas) |
-| `j`/`k`, setas, PgUp/PgDn | rola o conteúdo da aba       |
+| `j`/`k`, setas, PgUp/PgDn | rola / move o cursor da aba  |
 | `g`              | abre o relatório do dia (esc/q volta) |
 | `r`              | atualiza os dados agora               |
 | `q`              | sai                                   |
+| `enter`          | (GitLab/Jira) abre o detalhe do item selecionado |
+| `o`              | (GitLab/Jira) abre o item no navegador |
+| `/`              | (GitLab/Jira) filtra a lista (esc limpa) |
 | `a`              | (Tarefas) adiciona tarefa             |
 | `espaço` / `x`   | (Tarefas) marca/desmarca como feita   |
 | `d`              | (Tarefas) apaga a tarefa selecionada  |
@@ -85,8 +88,16 @@ Itens que pedem atenção — vencendo hoje/atrasados e reviews aguardando você
 aparecem num **realce no topo** da tela enquanto existirem.
 
 As abas **GitLab** e **Jira** mostram quanto você produziu hoje, na semana e
-no mês; a aba **Desempenho** compara cada janela (dia/semana/mês) com o
-período anterior equivalente.
+no mês; cada item é selecionável (`j`/`k`): `enter` abre um painel com a
+descrição, os comentários e os MRs ligados, `o` abre no navegador e `/`
+filtra a lista por chave, título ou status. A aba **Desempenho** compara
+cada janela (dia/semana/mês) com o período anterior equivalente e, se você
+definir metas em `[goals]`, mostra barras de progresso e a sequência de
+dias úteis com entrega.
+
+Cada atualização grava um instantâneo do dia (MRs, issues e tarefas) em
+`~/.local/share/wmonit/history.json`, que alimenta a sequência de entregas
+e dá uma série temporal real ao longo do tempo.
 
 Os dados são atualizados automaticamente a cada 5 minutos. As tarefas ficam
 salvas em `~/.local/share/wmonit/tasks.json`.
