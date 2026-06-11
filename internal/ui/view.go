@@ -159,10 +159,9 @@ func (m Model) content() string {
 		return m.viewHoje()
 	case tabDesempenho:
 		return m.viewDesempenho()
-	case tabGitLab:
-		return m.viewGitLab()
-	case tabJira:
-		return m.viewJira()
+	case tabGitLab, tabJira:
+		s, _ := renderRows(m.currentRows(), m.cursor)
+		return s
 	case tabTarefas:
 		return m.viewTarefas()
 	}
@@ -207,6 +206,8 @@ func (m Model) footer(vp interface{ ScrollPercent() float64 }) string {
 	help := "tab/1-5 abas · g relatório do dia · j/k rolar · r atualizar · q sair"
 	if m.report {
 		help = "esc/q voltar · j/k rolar · r atualizar"
+	} else if m.tab == tabGitLab || m.tab == tabJira {
+		help = "j/k selecionar · o abrir no navegador · r atualizar · q sair"
 	} else if m.tab == tabTarefas {
 		if m.adding {
 			help = "enter salvar · esc cancelar"
@@ -689,43 +690,6 @@ func (m Model) viewDesempenho() string {
 	return b.String()
 }
 
-func (m Model) viewGitLab() string {
-	if m.glErr != nil {
-		return errStyle.Render(m.glErr.Error())
-	}
-	if m.gl == nil {
-		return dim.Render("carregando…")
-	}
-	var b strings.Builder
-	now := time.Now()
-	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
-	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local)
-	merged := mergedIn(m.gl.Merged, startOfWeek(now), now)
-	b.WriteString(section.Render("📊 @"+m.gl.Username) + "\n")
-	b.WriteString(fmt.Sprintf("  MRs mergeados — hoje: %d · semana: %d · mês: %d\n",
-		len(mergedIn(m.gl.Merged, dayStart, now)), len(merged), len(mergedIn(m.gl.Merged, monthStart, now))))
-	b.WriteString(fmt.Sprintf("  MRs abertos: %d · reviews pendentes: %d\n\n",
-		len(m.gl.OpenMRs), len(m.gl.ReviewPending)))
-
-	b.WriteString(section.Render("📬 MRs abertos") + "\n")
-	writeMRs(&b, m.gl.OpenMRs)
-	b.WriteString("\n" + section.Render("⏳ Aguardando seu review") + "\n")
-	writeMRs(&b, m.gl.ReviewPending)
-	b.WriteString("\n" + section.Render("✅ Mergeados nesta semana") + "\n")
-	writeMRs(&b, merged)
-	return b.String()
-}
-
-func writeMRs(b *strings.Builder, mrs []gitlab.MR) {
-	if len(mrs) == 0 {
-		b.WriteString(dim.Render("  nenhum") + "\n")
-		return
-	}
-	for _, mr := range mrs {
-		b.WriteString("  " + renderMR(mr) + "\n")
-	}
-}
-
 func renderMR(mr gitlab.MR) string {
 	s := dim.Render(shortRef(mr)) + " " + mr.ShortTitle()
 	if k := mr.JiraKey(); k != "" {
@@ -759,61 +723,6 @@ func groupByStatus(issues []jira.Issue, order []string) ([]string, map[string][]
 	}
 	sort.SliceStable(names, func(i, j int) bool { return rank(names[i]) < rank(names[j]) })
 	return names, groups
-}
-
-func (m Model) viewJira() string {
-	if m.jiErr != nil {
-		return errStyle.Render(m.jiErr.Error())
-	}
-	if m.ji == nil {
-		return dim.Render("carregando…")
-	}
-	var b strings.Builder
-	now := time.Now()
-	today := now.Format("2006-01-02")
-	weekStartD := startOfWeek(now).Format("2006-01-02")
-	monthStartD := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local).Format("2006-01-02")
-	resolvedWeek := resolvedIn(m.ji.Resolved, weekStartD, today)
-	b.WriteString(section.Render("📊 Resumo") + "\n")
-	b.WriteString(fmt.Sprintf("  resolvidas — hoje: %d · semana: %d · mês: %d\n",
-		len(resolvedIn(m.ji.Resolved, today, today)), len(resolvedWeek), len(resolvedIn(m.ji.Resolved, monthStartD, today))))
-	b.WriteString(fmt.Sprintf("  abertas: %d\n\n", len(m.ji.Open)))
-
-	if len(m.ji.Open) == 0 {
-		b.WriteString(section.Render("📋 Suas issues abertas") + "\n")
-		b.WriteString(dim.Render("  nenhuma") + "\n")
-	} else {
-		names, groups := groupByStatus(m.ji.Open, m.cfg.Jira.StatusOrder)
-		for _, name := range names {
-			issues := groups[name]
-			b.WriteString(statusHead.Render(fmt.Sprintf("▍%s (%d)", name, len(issues))) + "\n")
-			for _, is := range issues {
-				line := "  " + warnStyle.Render(is.Key) + " " + is.Summary + prioBadge(is.Priority)
-				if is.Complexity != "" {
-					line += dim.Render(" · cx " + is.Complexity)
-				}
-				if is.Due != "" {
-					line += dim.Render(" (vence " + is.Due + ")")
-				}
-				line += m.mrBadge(is.Key)
-				b.WriteString(line + "\n")
-			}
-			b.WriteString("\n")
-		}
-	}
-
-	b.WriteString("\n" + section.Render("✅ Resolvidas nesta semana") + "\n")
-	if len(resolvedWeek) == 0 {
-		b.WriteString(dim.Render("  nenhuma") + "\n")
-	}
-	for _, is := range resolvedWeek {
-		line := "  " + okStyle.Render(is.Key) + " " + is.Summary
-		if is.Complexity != "" {
-			line += dim.Render(" · cx " + is.Complexity)
-		}
-		b.WriteString(line + "\n")
-	}
-	return b.String()
 }
 
 func (m Model) viewTarefas() string {
