@@ -65,6 +65,7 @@ type Model struct {
 	pending        *pendingSession
 	sessInfo       string // última mensagem de status das sessões
 	progress       map[string]claude.Progress
+	handles        map[string]*claude.Handle // execuções vivas, p/ cancelar
 
 	tab     tab
 	gl      *gitlab.Summary
@@ -105,7 +106,7 @@ func New(cfg config.Config, store *tasks.Store) Model {
 	sp := spinner.New(spinner.WithSpinner(spinner.Dot))
 	hist, _ := history.Load() // sem histórico ainda não é erro fatal
 	sess, _ := session.Load() // mesmo com erro o store volta utilizável
-	return Model{cfg: cfg, store: store, hist: hist, sess: sess, input: ti, filterInput: fi, spin: sp, vp: viewport.New(80, 20), loading: 2, notified: map[string]bool{}, progress: map[string]claude.Progress{}}
+	return Model{cfg: cfg, store: store, hist: hist, sess: sess, input: ti, filterInput: fi, spin: sp, vp: viewport.New(80, 20), loading: 2, notified: map[string]bool{}, progress: map[string]claude.Progress{}, handles: map[string]*claude.Handle{}}
 }
 
 func (m Model) Init() tea.Cmd {
@@ -250,7 +251,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case sessFinishedMsg:
+		delete(m.handles, msg.id)
 		if s := m.sess.Find(msg.id); s != nil {
+			if s.Status == session.StatusCancelled {
+				m.sess.Save()
+				return m, nil
+			}
 			now := time.Now()
 			s.Finished = &now
 			s.Prompt = msg.prompt
