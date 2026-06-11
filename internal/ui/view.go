@@ -211,13 +211,16 @@ func (m Model) alerts() string {
 }
 
 func (m Model) footer(vp interface{ ScrollPercent() float64 }) string {
+	if m.filtering {
+		return dim.Render(" buscar: ") + m.filterInput.View() + dim.Render("  (enter aplica · esc limpa)")
+	}
 	help := "tab/1-5 abas · g relatório do dia · j/k rolar · r atualizar · q sair"
 	if m.detail {
 		help = "esc/q voltar · o abrir no navegador · j/k rolar"
 	} else if m.report {
 		help = "esc/q voltar · j/k rolar · r atualizar"
 	} else if m.tab == tabGitLab || m.tab == tabJira {
-		help = "j/k selecionar · enter detalhes · o navegador · r atualizar · q sair"
+		help = "j/k selecionar · enter detalhes · o navegador · / buscar · r atualizar · q sair"
 	} else if m.tab == tabTarefas {
 		if m.adding {
 			help = "enter salvar · esc cancelar"
