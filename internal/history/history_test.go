@@ -7,8 +7,15 @@ import (
 
 func TestUpsert(t *testing.T) {
 	s := &Store{}
-	s.Upsert(Day{Date: "2026-06-10", MRs: 1})
-	s.Upsert(Day{Date: "2026-06-10", MRs: 3, Issues: 2}) // mesma data: substitui
+	if !s.Upsert(Day{Date: "2026-06-10", MRs: 1}) {
+		t.Error("registro novo deveria reportar mudança")
+	}
+	if !s.Upsert(Day{Date: "2026-06-10", MRs: 3, Issues: 2}) { // mesma data: substitui
+		t.Error("números diferentes deveriam reportar mudança")
+	}
+	if s.Upsert(Day{Date: "2026-06-10", MRs: 3, Issues: 2}) {
+		t.Error("valor idêntico não deveria reportar mudança")
+	}
 	s.Upsert(Day{Date: "2026-06-11", MRs: 1})
 	if len(s.Days) != 2 {
 		t.Fatalf("Days = %d, esperado 2", len(s.Days))
