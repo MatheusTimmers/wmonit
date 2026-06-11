@@ -93,6 +93,30 @@ func (m Model) gitlabRows() []row {
 		hdr(dim.Render("carregando…"))
 		return rows
 	}
+	if q := strings.ToLower(strings.TrimSpace(m.filter)); q != "" {
+		var items []row
+		seen := map[string]bool{}
+		add := func(mrs []gitlab.MR) {
+			for i := range mrs {
+				id := fmt.Sprintf("%d-%d", mrs[i].ProjectID, mrs[i].IID)
+				if seen[id] || !matchMR(mrs[i], q) {
+					continue
+				}
+				seen[id] = true
+				items = append(items, row{text: renderMR(mrs[i]), item: &focusItem{mr: &mrs[i]}})
+			}
+		}
+		add(m.gl.OpenMRs)
+		add(m.gl.ReviewPending)
+		add(m.gl.Merged)
+		hdr(section.Render(fmt.Sprintf("🔎 filtro: %q (%d)", m.filter, len(items))))
+		rows = append(rows, items...)
+		if len(items) == 0 {
+			hdr(dim.Render("  nenhum resultado"))
+		}
+		return rows
+	}
+
 	now := time.Now()
 	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local)
@@ -133,6 +157,28 @@ func (m Model) jiraRows() []row {
 		hdr(dim.Render("carregando…"))
 		return rows
 	}
+	if q := strings.ToLower(strings.TrimSpace(m.filter)); q != "" {
+		var items []row
+		seen := map[string]bool{}
+		add := func(issues []jira.Issue) {
+			for i := range issues {
+				if seen[issues[i].Key] || !matchIssue(issues[i], q) {
+					continue
+				}
+				seen[issues[i].Key] = true
+				items = append(items, row{text: m.issueLine(issues[i]), item: &focusItem{issue: &issues[i]}})
+			}
+		}
+		add(m.ji.Open)
+		add(m.ji.Resolved)
+		hdr(section.Render(fmt.Sprintf("🔎 filtro: %q (%d)", m.filter, len(items))))
+		rows = append(rows, items...)
+		if len(items) == 0 {
+			hdr(dim.Render("  nenhum resultado"))
+		}
+		return rows
+	}
+
 	now := time.Now()
 	today := now.Format("2006-01-02")
 	weekStartD := startOfWeek(now).Format("2006-01-02")
@@ -189,6 +235,19 @@ func resolvedLine(is jira.Issue) string {
 		line += dim.Render(" · cx " + is.Complexity)
 	}
 	return line
+}
+
+// matchMR e matchIssue testam se o item bate com a busca (q já minúsculo).
+func matchMR(mr gitlab.MR, q string) bool {
+	return strings.Contains(strings.ToLower(mr.Title), q) ||
+		strings.Contains(strings.ToLower(shortRef(mr)), q) ||
+		strings.Contains(strings.ToLower(mr.JiraKey()), q)
+}
+
+func matchIssue(is jira.Issue, q string) bool {
+	return strings.Contains(strings.ToLower(is.Key), q) ||
+		strings.Contains(strings.ToLower(is.Summary), q) ||
+		strings.Contains(strings.ToLower(is.Status), q)
 }
 
 // itemURL devolve o link para abrir o item no navegador.

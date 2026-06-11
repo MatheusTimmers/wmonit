@@ -66,6 +66,10 @@ type Model struct {
 	report bool
 	input  textinput.Model
 
+	filtering   bool
+	filter      string
+	filterInput textinput.Model
+
 	detail        bool
 	detailLoading bool
 	detailTitle   string
@@ -84,9 +88,11 @@ type Model struct {
 func New(cfg config.Config, store *tasks.Store) Model {
 	ti := textinput.New()
 	ti.Placeholder = "descrição (opcional no final: @today, @tomorrow, @2026-06-15; hora: @today 15:00)"
+	fi := textinput.New()
+	fi.Placeholder = "filtrar por chave, título ou status"
 	sp := spinner.New(spinner.WithSpinner(spinner.Dot))
 	hist, _ := history.Load() // sem histórico ainda não é erro fatal
-	return Model{cfg: cfg, store: store, hist: hist, input: ti, spin: sp, vp: viewport.New(80, 20), loading: 2, notified: map[string]bool{}}
+	return Model{cfg: cfg, store: store, hist: hist, input: ti, filterInput: fi, spin: sp, vp: viewport.New(80, 20), loading: 2, notified: map[string]bool{}}
 }
 
 func (m Model) Init() tea.Cmd {
@@ -216,6 +222,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.adding {
 			return m.updateAdding(msg)
 		}
+		if m.filtering {
+			return m.updateFilter(msg)
+		}
 		if m.detail {
 			return m.updateDetail(msg)
 		}
@@ -244,6 +253,28 @@ func (m Model) updateAdding(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	return m, cmd
+}
+
+// updateFilter trata a digitação da busca; o filtro é aplicado ao vivo.
+func (m Model) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter":
+		m.filtering = false
+		m.filter = strings.TrimSpace(m.filterInput.Value())
+		m.cursor = 0
+		return m, nil
+	case "esc":
+		m.filtering = false
+		m.filter = ""
+		m.filterInput.Reset()
+		m.cursor = 0
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.filterInput, cmd = m.filterInput.Update(msg)
+	m.filter = m.filterInput.Value()
+	m.cursor = 0
 	return m, cmd
 }
 
@@ -276,15 +307,15 @@ func (m Model) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "1", "2", "3", "4", "5":
 		m.tab = tab(msg.String()[0] - '1')
-		m.cursor = 0
+		m.cursor, m.filter = 0, ""
 		m.vp.GotoTop()
 		return m, nil
 	case "tab", "l", "right":
-		m.tab, m.cursor = (m.tab+1)%numTabs, 0
+		m.tab, m.cursor, m.filter = (m.tab+1)%numTabs, 0, ""
 		m.vp.GotoTop()
 		return m, nil
 	case "shift+tab", "h", "left":
-		m.tab, m.cursor = (m.tab+numTabs-1)%numTabs, 0
+		m.tab, m.cursor, m.filter = (m.tab+numTabs-1)%numTabs, 0, ""
 		m.vp.GotoTop()
 		return m, nil
 	case "r":
@@ -345,6 +376,13 @@ func (m Model) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m.openDetail(it)
 			}
 			return m, nil
+		case "/":
+			m.filtering = true
+			m.filter = ""
+			m.filterInput.SetValue("")
+			m.cursor = 0
+			m.filterInput.Focus()
+			return m, textinput.Blink
 		}
 		// Demais teclas (pgup/pgdn…) rolam o viewport.
 		m.vp.SetContent(m.content())
