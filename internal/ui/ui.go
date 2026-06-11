@@ -295,12 +295,51 @@ func (m Model) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	if m.tab == tabGitLab || m.tab == tabJira {
+		switch msg.String() {
+		case "j", "down":
+			if m.cursor < m.focusCount()-1 {
+				m.cursor++
+			}
+			m.scrollToItem()
+			return m, nil
+		case "k", "up":
+			if m.cursor > 0 {
+				m.cursor--
+			}
+			m.scrollToItem()
+			return m, nil
+		case "o":
+			if it := m.selectedItem(); it != nil {
+				return m, openURLCmd(m.itemURL(it))
+			}
+			return m, nil
+		}
+		// Demais teclas (pgup/pgdn…) rolam o viewport.
+		m.vp.SetContent(m.content())
+		var cmd tea.Cmd
+		m.vp, cmd = m.vp.Update(msg)
+		return m, cmd
+	}
+
 	// Nas demais abas o viewport cuida da rolagem (j/k, setas, pgup/pgdn…).
 	// O conteúdo precisa estar carregado nele para a altura ser conhecida.
 	m.vp.SetContent(m.content())
 	var cmd tea.Cmd
 	m.vp, cmd = m.vp.Update(msg)
 	return m, cmd
+}
+
+// scrollToItem garante que o item selecionado nas abas GitLab/Jira fique
+// visível no viewport.
+func (m *Model) scrollToItem() {
+	content, sel := renderRows(m.currentRows(), m.cursor)
+	m.vp.SetContent(content)
+	if sel < m.vp.YOffset {
+		m.vp.SetYOffset(sel)
+	} else if sel >= m.vp.YOffset+m.vp.Height {
+		m.vp.SetYOffset(sel - m.vp.Height + 1)
+	}
 }
 
 func (m *Model) scrollToCursor() {
