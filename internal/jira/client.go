@@ -47,8 +47,7 @@ type Issue struct {
 type Summary struct {
 	Open     []Issue // atribuídas a você, não concluídas
 	Resolved []Issue // resolvidas desde o início do mês anterior
-	Sprint   []Issue
-	CXField  string // campo usado para complexidade; vazio se não encontrado
+	CXField  string  // campo usado para complexidade; vazio se não encontrado
 }
 
 func (c *Client) get(path string, q url.Values, out any) (int, error) {
@@ -234,8 +233,5 @@ func (c *Client) Fetch() (*Summary, error) {
 		return nil, err
 	}
 
-	// Sem boards ágeis a função sprint não existe; nesse caso seguimos sem ela.
-	sprint, _ := c.search(`assignee = currentUser() AND sprint in openSprints() ORDER BY status`, 50, cx)
-
-	return &Summary{Open: open, Resolved: resolved, Sprint: sprint, CXField: cx}, nil
+	return &Summary{Open: open, Resolved: resolved, CXField: cx}, nil
 }

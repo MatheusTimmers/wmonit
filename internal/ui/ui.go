@@ -27,6 +27,7 @@ const (
 )
 
 const refreshEvery = 5 * time.Minute
+const reminderEvery = 30 * time.Second
 
 type glMsg struct {
 	sum *gitlab.Summary
@@ -39,6 +40,7 @@ type jiMsg struct {
 }
 
 type tickMsg time.Time
+type reminderMsg time.Time
 
 type Model struct {
 	cfg   config.Config
@@ -59,22 +61,55 @@ type Model struct {
 	vp      viewport.Model
 	updated time.Time
 
+	notified map[string]bool // lembretes já disparados nesta sessão
+
 	width, height int
 }
 
 func New(cfg config.Config, store *tasks.Store) Model {
 	ti := textinput.New()
-	ti.Placeholder = "descrição (opcional: @hoje, @amanha ou @2026-06-15 no final)"
+	ti.Placeholder = "descrição (opcional no final: @today, @tomorrow, @2026-06-15; hora: @today 15:00)"
 	sp := spinner.New(spinner.WithSpinner(spinner.Dot))
-	return Model{cfg: cfg, store: store, input: ti, spin: sp, vp: viewport.New(80, 20), loading: 2}
+	return Model{cfg: cfg, store: store, input: ti, spin: sp, vp: viewport.New(80, 20), loading: 2, notified: map[string]bool{}}
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.fetchAll(), m.spin.Tick, tick())
+	return tea.Batch(m.fetchAll(), m.spin.Tick, tick(), reminderTick())
 }
 
 func tick() tea.Cmd {
 	return tea.Tick(refreshEvery, func(t time.Time) tea.Msg { return tickMsg(t) })
+}
+
+func reminderTick() tea.Cmd {
+	return tea.Tick(reminderEvery, func(t time.Time) tea.Msg { return reminderMsg(t) })
+}
+
+// checkReminders dispara uma notificação para cada tarefa cujo horário de
+// lembrete já chegou hoje e que ainda não foi notificada nesta sessão.
+func (m Model) checkReminders() tea.Cmd {
+	now := time.Now()
+	today := now.Format("2006-01-02")
+	var cmds []tea.Cmd
+	for _, t := range m.store.Tasks {
+		if t.Done || t.DueTime == "" || t.Due != today {
+			continue
+		}
+		due, err := time.ParseInLocation("2006-01-02 15:04", t.Due+" "+t.DueTime, time.Local)
+		if err != nil || now.Before(due) {
+			continue
+		}
+		key := t.Due + " " + t.DueTime + " " + t.Text
+		if m.notified[key] {
+			continue
+		}
+		m.notified[key] = true
+		cmds = append(cmds, notifyCmd("wmonit — lembrete", t.Text))
+	}
+	if len(cmds) == 0 {
+		return nil
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m Model) fetchAll() tea.Cmd {
@@ -108,6 +143,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		m.loading = 2
 		return m, tea.Batch(m.fetchAll(), tick())
+
+	case reminderMsg:
+		return m, tea.Batch(m.checkReminders(), reminderTick())
 
 	case glMsg:
 		m.loading--

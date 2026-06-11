@@ -75,8 +75,18 @@ Revisão 1, Em Deploy…). A ordem dos grupos é configurável via
 `status_order` no `config.toml` — use os nomes exatos dos status do seu
 projeto; status fora da lista aparecem no final.
 
-Ao adicionar uma tarefa, um sufixo `@hoje`, `@amanha` ou `@2026-06-15` define
-a data de vencimento — tarefas vencendo aparecem na aba **Hoje**.
+Ao adicionar uma tarefa, um sufixo `@today`, `@tomorrow` ou `@2026-06-15`
+define a data de vencimento — tarefas vencendo aparecem na aba **Hoje**. Um
+horário opcional logo após a data (ex.: `@today 15:00`) vira um **lembrete**:
+ao chegar a hora, o wmonit dispara uma **notificação de desktop** (toast no
+Windows, notify-send no Linux).
+
+Itens que pedem atenção — vencendo hoje/atrasados e reviews aguardando você —
+aparecem num **realce no topo** da tela enquanto existirem.
+
+As abas **GitLab** e **Jira** mostram quanto você produziu hoje, na semana e
+no mês; a aba **Desempenho** compara cada janela (dia/semana/mês) com o
+período anterior equivalente.
 
 Os dados são atualizados automaticamente a cada 5 minutos. As tarefas ficam
 salvas em `~/.local/share/wmonit/tasks.json`.
