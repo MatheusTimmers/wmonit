@@ -43,6 +43,12 @@ type jiMsg struct {
 type tickMsg time.Time
 type reminderMsg time.Time
 
+// detailMsg traz o conteúdo do painel de detalhes carregado de forma assíncrona.
+type detailMsg struct {
+	body string
+	err  error
+}
+
 type Model struct {
 	cfg   config.Config
 	store *tasks.Store
@@ -55,10 +61,17 @@ type Model struct {
 	jiErr   error
 	loading int
 
-	cursor  int
-	adding  bool
-	report  bool
-	input   textinput.Model
+	cursor int
+	adding bool
+	report bool
+	input  textinput.Model
+
+	detail        bool
+	detailLoading bool
+	detailTitle   string
+	detailURL     string
+	detailBody    string
+
 	spin    spinner.Model
 	vp      viewport.Model
 	updated time.Time
@@ -175,6 +188,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case reminderMsg:
 		return m, tea.Batch(m.checkReminders(), reminderTick())
 
+	case detailMsg:
+		m.detailLoading = false
+		if msg.err != nil {
+			m.detailBody = errStyle.Render(msg.err.Error())
+		} else {
+			m.detailBody = msg.body
+		}
+		m.vp.GotoTop()
+		return m, nil
+
 	case glMsg:
 		m.loading--
 		m.gl, m.glErr = msg.sum, msg.err
@@ -192,6 +215,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		if m.adding {
 			return m.updateAdding(msg)
+		}
+		if m.detail {
+			return m.updateDetail(msg)
 		}
 		if m.report {
 			return m.updateReport(msg)
@@ -312,6 +338,11 @@ func (m Model) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "o":
 			if it := m.selectedItem(); it != nil {
 				return m, openURLCmd(m.itemURL(it))
+			}
+			return m, nil
+		case "enter":
+			if it := m.selectedItem(); it != nil {
+				return m.openDetail(it)
 			}
 			return m, nil
 		}
