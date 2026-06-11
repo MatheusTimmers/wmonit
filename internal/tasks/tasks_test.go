@@ -10,20 +10,23 @@ func TestParseDue(t *testing.T) {
 	tomorrow := time.Now().AddDate(0, 0, 1).Format("2006-01-02")
 
 	cases := []struct {
-		input, text, due string
+		input, text, due, dueTime string
 	}{
-		{"revisar MR do fulano", "revisar MR do fulano", ""},
-		{"pagar boleto @hoje", "pagar boleto", today},
-		{"responder e-mail @amanha", "responder e-mail", tomorrow},
-		{"responder e-mail @amanhã", "responder e-mail", tomorrow},
-		{"entrega @2026-06-15", "entrega", "2026-06-15"},
-		{"falar com time@nelogica", "falar com time@nelogica", ""},
-		{"tarefa @data-invalida", "tarefa @data-invalida", ""},
+		{"revisar MR do fulano", "revisar MR do fulano", "", ""},
+		{"pagar boleto @today", "pagar boleto", today, ""},
+		{"responder e-mail @tomorrow", "responder e-mail", tomorrow, ""},
+		{"entrega @2026-06-15", "entrega", "2026-06-15", ""},
+		{"reunião @today 15:00", "reunião", today, "15:00"},
+		{"deploy @2026-06-15 09:30", "deploy", "2026-06-15", "09:30"},
+		{"hora inválida @today 99:99", "hora inválida", today, ""},
+		{"falar com time@nelogica", "falar com time@nelogica", "", ""},
+		{"tarefa @data-invalida", "tarefa @data-invalida", "", ""},
 	}
 	for _, c := range cases {
-		text, due := parseDue(c.input)
-		if text != c.text || due != c.due {
-			t.Errorf("parseDue(%q) = (%q, %q), esperado (%q, %q)", c.input, text, due, c.text, c.due)
+		text, due, dueTime := parseDue(c.input)
+		if text != c.text || due != c.due || dueTime != c.dueTime {
+			t.Errorf("parseDue(%q) = (%q, %q, %q), esperado (%q, %q, %q)",
+				c.input, text, due, dueTime, c.text, c.due, c.dueTime)
 		}
 	}
 }
