@@ -13,6 +13,7 @@ import (
 	"github.com/timmers/wmonit/internal/gitlab"
 	"github.com/timmers/wmonit/internal/history"
 	"github.com/timmers/wmonit/internal/jira"
+	"github.com/timmers/wmonit/internal/session"
 	"github.com/timmers/wmonit/internal/tasks"
 )
 
@@ -24,6 +25,7 @@ const (
 	tabGitLab
 	tabJira
 	tabTarefas
+	tabSessoes
 	numTabs
 )
 
@@ -53,6 +55,14 @@ type Model struct {
 	cfg   config.Config
 	store *tasks.Store
 	hist  *history.Store
+	sess  *session.Store
+
+	// Estado das sessões de trabalho (aba Sessões e tecla 'c').
+	pickingService bool
+	pickOptions    []string
+	pickCursor     int
+	pending        *pendingSession
+	sessInfo       string // última mensagem de status das sessões
 
 	tab     tab
 	gl      *gitlab.Summary
@@ -92,7 +102,8 @@ func New(cfg config.Config, store *tasks.Store) Model {
 	fi.Placeholder = "filtrar por chave, título ou status"
 	sp := spinner.New(spinner.WithSpinner(spinner.Dot))
 	hist, _ := history.Load() // sem histórico ainda não é erro fatal
-	return Model{cfg: cfg, store: store, hist: hist, input: ti, filterInput: fi, spin: sp, vp: viewport.New(80, 20), loading: 2, notified: map[string]bool{}}
+	sess, _ := session.Load() // mesmo com erro o store volta utilizável
+	return Model{cfg: cfg, store: store, hist: hist, sess: sess, input: ti, filterInput: fi, spin: sp, vp: viewport.New(80, 20), loading: 2, notified: map[string]bool{}}
 }
 
 func (m Model) Init() tea.Cmd {
@@ -219,9 +230,43 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.recordToday()
 		return m, nil
 
+	case sessCreatedMsg:
+		if msg.err != nil {
+			m.sessInfo = errStyle.Render(msg.err.Error())
+			return m, nil
+		}
+		m.sess.Add(msg.sess)
+		m.sess.Save()
+		m.sessInfo = okStyle.Render("sessão criada: " + msg.sess.Key + " em " + msg.sess.Worktree)
+		return m, nil
+
+	case sessActionMsg:
+		if msg.err != nil {
+			m.sessInfo = errStyle.Render(msg.err.Error())
+			return m, nil
+		}
+		if msg.remove {
+			for i := range m.sess.Sessions {
+				if m.sess.Sessions[i].ID == msg.id {
+					m.sess.DeleteAt(i)
+					break
+				}
+			}
+			if m.cursor >= len(m.sess.Sessions) && m.cursor > 0 {
+				m.cursor--
+			}
+		} else if s := m.sess.Find(msg.id); s != nil && msg.status != "" {
+			s.Status = msg.status
+		}
+		m.sess.Save()
+		return m, nil
+
 	case tea.KeyMsg:
 		if m.adding {
 			return m.updateAdding(msg)
+		}
+		if m.pickingService {
+			return m.updatePickService(msg)
 		}
 		if m.filtering {
 			return m.updateFilter(msg)
@@ -306,7 +351,7 @@ func (m Model) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.report = true
 		m.vp.GotoTop()
 		return m, nil
-	case "1", "2", "3", "4", "5":
+	case "1", "2", "3", "4", "5", "6":
 		m.tab = tab(msg.String()[0] - '1')
 		m.cursor, m.filter = 0, ""
 		m.vp.GotoTop()
@@ -353,6 +398,10 @@ func (m Model) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	if m.tab == tabSessoes {
+		return m.sessionKeys(msg)
+	}
+
 	if m.tab == tabGitLab || m.tab == tabJira {
 		switch msg.String() {
 		case "j", "down":
@@ -384,6 +433,11 @@ func (m Model) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cursor = 0
 			m.filterInput.Focus()
 			return m, textinput.Blink
+		case "c":
+			if it := m.selectedItem(); it != nil {
+				return m.startSession(it)
+			}
+			return m, nil
 		}
 		// Demais teclas (pgup/pgdn…) rolam o viewport.
 		m.vp.SetContent(m.content())

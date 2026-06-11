@@ -25,12 +25,13 @@ func New(base, token string) *Client {
 }
 
 type MR struct {
-	IID         int    `json:"iid"`
-	ProjectID   int    `json:"project_id"`
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	WebURL      string `json:"web_url"`
-	References  struct {
+	IID          int    `json:"iid"`
+	ProjectID    int    `json:"project_id"`
+	Title        string `json:"title"`
+	Description  string `json:"description"`
+	WebURL       string `json:"web_url"`
+	SourceBranch string `json:"source_branch"`
+	References   struct {
 		Full string `json:"full"`
 	} `json:"references"`
 	UpdatedAt time.Time  `json:"updated_at"`
