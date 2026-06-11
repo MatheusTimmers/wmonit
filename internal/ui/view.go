@@ -29,7 +29,7 @@ var (
 	alertStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("0")).Background(lipgloss.Color("214"))
 )
 
-var tabNames = []string{"Hoje", "Desempenho", "GitLab", "Jira", "Tarefas"}
+var tabNames = []string{"Hoje", "Desempenho", "GitLab", "Jira", "Tarefas", "Sessões"}
 
 var ptMonths = [...]string{"jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"}
 
@@ -153,6 +153,9 @@ func (m Model) View() string {
 // content gera o texto da aba ativa; é usado tanto para desenhar quanto
 // para alimentar o viewport do modelo (sem isso a rolagem não tem altura).
 func (m Model) content() string {
+	if m.pickingService {
+		return m.viewPickService()
+	}
 	if m.detail {
 		if m.detailLoading {
 			return dim.Render("carregando…")
@@ -172,6 +175,8 @@ func (m Model) content() string {
 		return s
 	case tabTarefas:
 		return m.viewTarefas()
+	case tabSessoes:
+		return m.viewSessoes()
 	}
 	return ""
 }
@@ -214,13 +219,17 @@ func (m Model) footer(vp interface{ ScrollPercent() float64 }) string {
 	if m.filtering {
 		return dim.Render(" buscar: ") + m.filterInput.View() + dim.Render("  (enter aplica · esc limpa)")
 	}
-	help := "tab/1-5 abas · g relatório do dia · j/k rolar · r atualizar · q sair"
-	if m.detail {
+	help := "tab/1-6 abas · g relatório do dia · j/k rolar · r atualizar · q sair"
+	if m.pickingService {
+		help = "j/k escolher serviço · enter confirmar · esc cancelar"
+	} else if m.detail {
 		help = "esc/q voltar · o abrir no navegador · j/k rolar"
 	} else if m.report {
 		help = "esc/q voltar · j/k rolar · r atualizar"
 	} else if m.tab == tabGitLab || m.tab == tabJira {
-		help = "j/k selecionar · enter detalhes · o navegador · / buscar · r atualizar · q sair"
+		help = "j/k selecionar · enter detalhes · o navegador · c sessão · / buscar · r atualizar · q sair"
+	} else if m.tab == tabSessoes {
+		help = "j/k navegar · o navegador · d remover · D forçar remoção · q sair"
 	} else if m.tab == tabTarefas {
 		if m.adding {
 			help = "enter salvar · esc cancelar"

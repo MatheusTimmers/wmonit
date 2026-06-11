@@ -30,3 +30,13 @@ complexity_field = ""
 [goals]
 weekly_mrs = 0
 weekly_issues = 0
+
+# Sessões de trabalho com o Claude Code (aba Sessões, tecla 'c').
+[claude]
+sources_dir = "c:/Fontes"  # pasta com os serviços (cada subpasta é um repo git)
+worktrees_dir = ""         # vazio = <sources_dir>/.worktrees
+bin = "claude"             # binário do Claude Code
+
+# Instruções extras por serviço, anexadas ao prompt de cada sessão.
+# [claude.templates]
+# hades = "Rode os testes com 'go test ./...' antes de terminar."

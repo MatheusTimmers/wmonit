@@ -32,10 +32,23 @@ type Goals struct {
 	WeeklyIssues int `toml:"weekly_issues"`
 }
 
+// Claude configura as sessões de trabalho com o Claude Code.
+type Claude struct {
+	// Pasta com os serviços (cada subpasta é um repositório git).
+	SourcesDir string `toml:"sources_dir"`
+	// Onde criar os worktrees; vazio = <sources_dir>/.worktrees.
+	WorktreesDir string `toml:"worktrees_dir"`
+	// Binário do Claude Code; vazio = "claude" no PATH.
+	Bin string `toml:"bin"`
+	// Instruções extras por serviço, anexadas ao prompt da sessão.
+	Templates map[string]string `toml:"templates"`
+}
+
 type Config struct {
 	GitLab GitLab `toml:"gitlab"`
 	Jira   Jira   `toml:"jira"`
 	Goals  Goals  `toml:"goals"`
+	Claude Claude `toml:"claude"`
 }
 
 func Path() string {
@@ -70,6 +83,15 @@ func Load() (Config, error) {
 	}
 	if cfg.Jira.Auth == "" {
 		cfg.Jira.Auth = "bearer"
+	}
+	if cfg.Claude.SourcesDir == "" {
+		cfg.Claude.SourcesDir = "c:/Fontes"
+	}
+	if cfg.Claude.WorktreesDir == "" {
+		cfg.Claude.WorktreesDir = filepath.Join(cfg.Claude.SourcesDir, ".worktrees")
+	}
+	if cfg.Claude.Bin == "" {
+		cfg.Claude.Bin = "claude"
 	}
 	return cfg, nil
 }
