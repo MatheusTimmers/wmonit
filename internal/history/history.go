@@ -61,15 +61,21 @@ func (s *Store) Save() error {
 }
 
 // Upsert grava o resumo do dia, substituindo o registro existente da mesma
-// data (os números crescem ao longo do dia, então o último vale).
-func (s *Store) Upsert(d Day) {
+// data (os números crescem ao longo do dia, então o último vale). Devolve
+// true se algo mudou — registro novo ou números diferentes —, para o
+// chamador só gravar em disco quando vale a pena.
+func (s *Store) Upsert(d Day) bool {
 	for i := range s.Days {
 		if s.Days[i].Date == d.Date {
+			if s.Days[i] == d {
+				return false
+			}
 			s.Days[i] = d
-			return
+			return true
 		}
 	}
 	s.Days = append(s.Days, d)
+	return true
 }
 
 func (s *Store) Get(date string) (Day, bool) {

@@ -150,13 +150,14 @@ func (m *Model) recordToday() {
 			tsk++
 		}
 	}
-	m.hist.Upsert(history.Day{
+	if m.hist.Upsert(history.Day{
 		Date:   today,
 		MRs:    len(mergedIn(m.gl.Merged, dayStart, now)),
 		Issues: len(resolvedIn(m.ji.Resolved, today, today)),
 		Tasks:  tsk,
-	})
-	m.hist.Save()
+	}) {
+		m.hist.Save() // só grava quando o resumo do dia mudou
+	}
 }
 
 func (m Model) fetchAll() tea.Cmd {
