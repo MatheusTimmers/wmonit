@@ -229,7 +229,7 @@ func (m Model) footer(vp interface{ ScrollPercent() float64 }) string {
 	} else if m.tab == tabGitLab || m.tab == tabJira {
 		help = "j/k selecionar · enter detalhes · o navegador · c sessão · / buscar · r atualizar · q sair"
 	} else if m.tab == tabSessoes {
-		help = "s iniciar · v diff · e editor · f concluir · x cancelar · d/D remover · o navegador"
+		help = "s iniciar/retomar · t interativo · v diff · e editor · f concluir · x cancelar · d/D remover"
 	} else if m.tab == tabTarefas {
 		if m.adding {
 			help = "enter salvar · esc cancelar"

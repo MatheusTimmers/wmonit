@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -20,6 +21,28 @@ type sessFinishedMsg struct {
 	id     string
 	prompt string
 	err    error
+}
+
+// interactiveDoneMsg chega quando o claude interativo (tecla 't') fechou
+// e a TUI voltou.
+type interactiveDoneMsg struct {
+	id  string
+	err error
+}
+
+// openInteractive suspende a TUI e abre o Claude Code interativo no
+// worktree da sessão, retomando o contexto quando houver.
+func (m Model) openInteractive(s *session.Session) (tea.Model, tea.Cmd) {
+	var args []string
+	if s.ClaudeID != "" {
+		args = append(args, "--resume", s.ClaudeID)
+	}
+	cmd := exec.Command(m.cfg.Claude.Bin, args...)
+	cmd.Dir = s.Worktree
+	id := s.ID
+	return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
+		return interactiveDoneMsg{id: id, err: err}
+	})
 }
 
 // sessTickMsg dispara a releitura dos logs das sessões em execução.
@@ -238,8 +261,15 @@ func (m Model) sessionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, openURLCmd(s.URL)
 		}
 	case "s", "enter":
-		if s := m.selectedSession(); s != nil && (s.Status == session.StatusPending || s.Status == session.StatusFailed) {
+		// pending/failed: roda do zero; done com ClaudeID: retoma (--resume).
+		if s := m.selectedSession(); s != nil &&
+			(s.Status == session.StatusPending || s.Status == session.StatusFailed || s.Status == session.StatusDone) {
 			return m.startRun(s)
+		}
+	case "t":
+		// Terminal interativo: suspende a TUI e abre o claude no worktree.
+		if s := m.selectedSession(); s != nil && s.Active() && s.Status != session.StatusRunning {
+			return m.openInteractive(s)
 		}
 	case "v":
 		if s := m.selectedSession(); s != nil && s.Active() {
@@ -380,14 +410,20 @@ func (m Model) startRun(s *session.Session) (tea.Model, tea.Cmd) {
 	m.handles[s.ID] = h
 	tick := sessTick()
 	run := func() tea.Msg {
-		d := desc
-		if jiraKeyPattern.MatchString(sess.Key) {
-			det, err := jira.New(cfg.Jira.URL, cfg.Jira.Auth, cfg.Jira.Email, cfg.Jira.Token, cfg.Jira.ComplexityField).IssueDetail(sess.Key)
-			if err == nil {
-				d = det.Description
+		var prompt string
+		if sess.ClaudeID != "" {
+			// Retomada: o contexto já está na sessão do Claude.
+			prompt = "Continue a tarefa de onde parou, seguindo as instruções anteriores. Revise o estado atual do repositório antes de prosseguir."
+		} else {
+			d := desc
+			if jiraKeyPattern.MatchString(sess.Key) {
+				det, err := jira.New(cfg.Jira.URL, cfg.Jira.Auth, cfg.Jira.Email, cfg.Jira.Token, cfg.Jira.ComplexityField).IssueDetail(sess.Key)
+				if err == nil {
+					d = det.Description
+				}
 			}
+			prompt = claude.BuildPrompt(sess.Key, sess.Title, sess.URL, d, cfg.Claude.Templates[sess.Service])
 		}
-		prompt := claude.BuildPrompt(sess.Key, sess.Title, sess.URL, d, cfg.Claude.Templates[sess.Service])
 		err := claude.Run(cfg.Claude.Bin, sess.Worktree, prompt, sess.LogFile, sess.ClaudeID, h)
 		return sessFinishedMsg{id: sess.ID, prompt: prompt, err: err}
 	}

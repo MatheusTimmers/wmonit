@@ -285,6 +285,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case interactiveDoneMsg:
+		if msg.err != nil {
+			m.sessInfo = errStyle.Render("claude interativo: " + msg.err.Error())
+		} else if s := m.sess.Find(msg.id); s != nil {
+			if s.Status == session.StatusPending {
+				s.Status = session.StatusDone
+				m.sess.Save()
+			}
+			m.sessInfo = dim.Render("sessão interativa de " + s.Key + " encerrada — revise com v")
+		}
+		return m, nil
+
 	case sessActionMsg:
 		if msg.err != nil {
 			m.sessInfo = errStyle.Render(msg.err.Error())

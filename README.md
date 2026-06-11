@@ -101,3 +101,33 @@ e dá uma série temporal real ao longo do tempo.
 
 Os dados são atualizados automaticamente a cada 5 minutos. As tarefas ficam
 salvas em `~/.local/share/wmonit/tasks.json`.
+
+## Sessões de trabalho com o Claude Code
+
+A aba **Sessões** (tecla `6`) gerencia tarefas executadas pelo Claude Code
+em worktrees isolados — útil para trabalhar duas tarefas ao mesmo tempo no
+mesmo repositório.
+
+Nas abas GitLab/Jira, `c` cria uma sessão para o item selecionado: uma issue
+Jira ganha uma branch nova `feature/ABC-123`; um MR usa a branch existente.
+O serviço (repositório em `sources_dir`) é deduzido da `#TAG`/projeto do MR;
+se não der, você escolhe numa lista. O worktree é criado em
+`<worktrees_dir>/<id-da-sessão>`.
+
+Na aba Sessões:
+
+- `s`/`enter` — executa o Claude headless (`claude -p --output-format
+  stream-json`) no worktree, com prompt montado da descrição da task mais
+  as instruções do template do serviço (`[claude.templates]`). Em uma sessão
+  já concluída, retoma a conversa (`--resume`). O progresso (turnos,
+  ferramentas, último texto) aparece ao vivo e uma notificação de desktop
+  avisa quando termina.
+- `t` — abre o Claude **interativo** no worktree (a TUI volta ao sair).
+- `v` — mostra o diff do worktree · `e` — abre no editor (`$VISUAL`/VS Code).
+- `f` — conclui: remove o worktree (recusa se houver mudanças não
+  commitadas; `F` força) e marca a sessão como concluída.
+- `x` — cancela a execução em andamento · `d`/`D` — remove a sessão.
+
+As sessões ficam em `~/.local/share/wmonit/sessions.json` e os logs em
+`~/.local/share/wmonit/logs/`. Configure a pasta de fontes, os worktrees e o
+binário na seção `[claude]` do `config.toml`.
