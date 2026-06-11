@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/timmers/wmonit/internal/claude"
 	"github.com/timmers/wmonit/internal/config"
 	"github.com/timmers/wmonit/internal/gitlab"
 	"github.com/timmers/wmonit/internal/history"
@@ -63,6 +64,7 @@ type Model struct {
 	pickCursor     int
 	pending        *pendingSession
 	sessInfo       string // última mensagem de status das sessões
+	progress       map[string]claude.Progress
 
 	tab     tab
 	gl      *gitlab.Summary
@@ -103,7 +105,7 @@ func New(cfg config.Config, store *tasks.Store) Model {
 	sp := spinner.New(spinner.WithSpinner(spinner.Dot))
 	hist, _ := history.Load() // sem histórico ainda não é erro fatal
 	sess, _ := session.Load() // mesmo com erro o store volta utilizável
-	return Model{cfg: cfg, store: store, hist: hist, sess: sess, input: ti, filterInput: fi, spin: sp, vp: viewport.New(80, 20), loading: 2, notified: map[string]bool{}}
+	return Model{cfg: cfg, store: store, hist: hist, sess: sess, input: ti, filterInput: fi, spin: sp, vp: viewport.New(80, 20), loading: 2, notified: map[string]bool{}, progress: map[string]claude.Progress{}}
 }
 
 func (m Model) Init() tea.Cmd {
@@ -240,11 +242,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessInfo = okStyle.Render("sessão criada: " + msg.sess.Key + " em " + msg.sess.Worktree)
 		return m, nil
 
+	case sessTickMsg:
+		m.pollProgress()
+		if m.anyRunning() {
+			return m, sessTick()
+		}
+		return m, nil
+
 	case sessFinishedMsg:
 		if s := m.sess.Find(msg.id); s != nil {
 			now := time.Now()
 			s.Finished = &now
 			s.Prompt = msg.prompt
+			// O log final traz o session_id do Claude (para retomar) e o resumo.
+			if s.LogFile != "" {
+				if p, err := claude.ReadProgress(s.LogFile); err == nil {
+					m.progress[s.ID] = p
+					if p.SessionID != "" {
+						s.ClaudeID = p.SessionID
+					}
+				}
+			}
 			if msg.err != nil {
 				s.Status = session.StatusFailed
 				s.Err = msg.err.Error()

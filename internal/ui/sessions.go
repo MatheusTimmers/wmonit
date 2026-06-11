@@ -22,6 +22,37 @@ type sessFinishedMsg struct {
 	err    error
 }
 
+// sessTickMsg dispara a releitura dos logs das sessões em execução.
+type sessTickMsg time.Time
+
+const sessPollEvery = 2 * time.Second
+
+func sessTick() tea.Cmd {
+	return tea.Tick(sessPollEvery, func(t time.Time) tea.Msg { return sessTickMsg(t) })
+}
+
+// anyRunning informa se há sessão em execução (mantém o polling vivo).
+func (m Model) anyRunning() bool {
+	for _, s := range m.sess.Sessions {
+		if s.Status == session.StatusRunning {
+			return true
+		}
+	}
+	return false
+}
+
+// pollProgress relê os logs das sessões rodando e atualiza o progresso.
+func (m *Model) pollProgress() {
+	for _, s := range m.sess.Sessions {
+		if s.Status != session.StatusRunning || s.LogFile == "" {
+			continue
+		}
+		if p, err := claude.ReadProgress(s.LogFile); err == nil {
+			m.progress[s.ID] = p
+		}
+	}
+}
+
 // sessCreatedMsg chega quando o worktree de uma nova sessão ficou pronto
 // (ou falhou); a sessão só entra no store se err == nil.
 type sessCreatedMsg struct {
@@ -272,6 +303,7 @@ func (m Model) startRun(s *session.Session) (tea.Model, tea.Cmd) {
 			}
 		}
 	}
+	tick := sessTick()
 	run := func() tea.Msg {
 		d := desc
 		if jiraKeyPattern.MatchString(sess.Key) {
@@ -284,7 +316,7 @@ func (m Model) startRun(s *session.Session) (tea.Model, tea.Cmd) {
 		err := claude.Run(cfg.Claude.Bin, sess.Worktree, prompt, sess.LogFile, sess.ClaudeID)
 		return sessFinishedMsg{id: sess.ID, prompt: prompt, err: err}
 	}
-	return m, run
+	return m, tea.Batch(run, tick)
 }
 
 func statusLabel(s session.Status) string {
@@ -327,6 +359,31 @@ func (m Model) viewSessoes() string {
 		if s.Err != "" {
 			b.WriteString("    " + errStyle.Render(s.Err) + "\n")
 		}
+		if p, ok := m.progress[s.ID]; ok && s.Status == session.StatusRunning {
+			b.WriteString(dim.Render(fmt.Sprintf("    %s %d turnos", m.spin.View(), p.Turns)))
+			if len(p.Tools) > 0 {
+				b.WriteString(dim.Render(" · " + strings.Join(p.Tools, " → ")))
+			}
+			b.WriteString("\n")
+			if p.LastText != "" {
+				b.WriteString("    " + dim.Render(truncate(p.LastText, 120)) + "\n")
+			}
+		}
+		if s.Status == session.StatusDone {
+			if p, ok := m.progress[s.ID]; ok && p.Result != "" {
+				b.WriteString("    " + okStyle.Render(truncate(p.Result, 200)) + "\n")
+			}
+		}
 	}
 	return b.String()
+}
+
+// truncate corta o texto numa linha só, com reticências.
+func truncate(s string, n int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
 }
