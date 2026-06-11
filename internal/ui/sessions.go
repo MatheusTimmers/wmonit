@@ -3,14 +3,24 @@ package ui
 import (
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/timmers/wmonit/internal/claude"
+	"github.com/timmers/wmonit/internal/jira"
 	"github.com/timmers/wmonit/internal/session"
 	"github.com/timmers/wmonit/internal/worktree"
 )
+
+// sessFinishedMsg chega quando a execução headless do Claude terminou.
+type sessFinishedMsg struct {
+	id     string
+	prompt string
+	err    error
+}
 
 // sessCreatedMsg chega quando o worktree de uma nova sessão ficou pronto
 // (ou falhou); a sessão só entra no store se err == nil.
@@ -196,6 +206,10 @@ func (m Model) sessionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if s := m.selectedSession(); s != nil && s.URL != "" {
 			return m, openURLCmd(s.URL)
 		}
+	case "s", "enter":
+		if s := m.selectedSession(); s != nil && (s.Status == session.StatusPending || s.Status == session.StatusFailed) {
+			return m.startRun(s)
+		}
 	case "d":
 		if s := m.selectedSession(); s != nil {
 			return m, m.removeSessionCmd(*s, false)
@@ -230,6 +244,47 @@ func (m Model) removeSessionCmd(s session.Session, force bool) tea.Cmd {
 		}
 		return sessActionMsg{id: s.ID, remove: true}
 	}
+}
+
+var jiraKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]*-\d+$`)
+
+// startRun marca a sessão como rodando e dispara a execução headless do
+// Claude no worktree. A descrição da task é buscada dentro do comando
+// (rede não pode bloquear a UI).
+func (m Model) startRun(s *session.Session) (tea.Model, tea.Cmd) {
+	s.Status = session.StatusRunning
+	s.Err = ""
+	s.Finished = nil
+	s.LogFile = filepath.Join(session.LogDir(), s.ID+".jsonl")
+	m.sess.Save()
+	m.sessInfo = dim.Render("rodando claude em " + s.Worktree + "…")
+
+	cfg := m.cfg
+	sess := *s
+	// Para MR, a descrição já está em memória; para issue ela é buscada
+	// no Jira dentro do comando.
+	desc := ""
+	if !jiraKeyPattern.MatchString(sess.Key) && m.gl != nil {
+		for _, mr := range m.gl.OpenMRs {
+			if shortRef(mr) == sess.Key {
+				desc = mr.Description
+				break
+			}
+		}
+	}
+	run := func() tea.Msg {
+		d := desc
+		if jiraKeyPattern.MatchString(sess.Key) {
+			det, err := jira.New(cfg.Jira.URL, cfg.Jira.Auth, cfg.Jira.Email, cfg.Jira.Token, cfg.Jira.ComplexityField).IssueDetail(sess.Key)
+			if err == nil {
+				d = det.Description
+			}
+		}
+		prompt := claude.BuildPrompt(sess.Key, sess.Title, sess.URL, d, cfg.Claude.Templates[sess.Service])
+		err := claude.Run(cfg.Claude.Bin, sess.Worktree, prompt, sess.LogFile, sess.ClaudeID)
+		return sessFinishedMsg{id: sess.ID, prompt: prompt, err: err}
+	}
+	return m, run
 }
 
 func statusLabel(s session.Status) string {

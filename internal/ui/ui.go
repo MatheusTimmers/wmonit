@@ -240,6 +240,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessInfo = okStyle.Render("sessão criada: " + msg.sess.Key + " em " + msg.sess.Worktree)
 		return m, nil
 
+	case sessFinishedMsg:
+		if s := m.sess.Find(msg.id); s != nil {
+			now := time.Now()
+			s.Finished = &now
+			s.Prompt = msg.prompt
+			if msg.err != nil {
+				s.Status = session.StatusFailed
+				s.Err = msg.err.Error()
+			} else {
+				s.Status = session.StatusDone
+			}
+			m.sess.Save()
+			title := "wmonit — sessão " + s.Key
+			body := "Claude terminou — revise o resultado"
+			if msg.err != nil {
+				body = "Claude falhou: " + s.Err
+			}
+			return m, notifyCmd(title, body)
+		}
+		return m, nil
+
 	case sessActionMsg:
 		if msg.err != nil {
 			m.sessInfo = errStyle.Render(msg.err.Error())
