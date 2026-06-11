@@ -120,7 +120,9 @@ func (m Model) View() string {
 	var b strings.Builder
 
 	var topRow string
-	if m.report {
+	if m.detail {
+		topRow = tabActive.Render("🔍 "+m.detailTitle) + tabInactive.Render("esc volta · o abre no navegador")
+	} else if m.report {
 		topRow = tabActive.Render("📋 Relatório do dia") + tabInactive.Render(m.reportSummary())
 	} else {
 		var tabsRow []string
@@ -151,6 +153,12 @@ func (m Model) View() string {
 // content gera o texto da aba ativa; é usado tanto para desenhar quanto
 // para alimentar o viewport do modelo (sem isso a rolagem não tem altura).
 func (m Model) content() string {
+	if m.detail {
+		if m.detailLoading {
+			return dim.Render("carregando…")
+		}
+		return m.detailBody
+	}
 	if m.report {
 		return m.viewReport()
 	}
@@ -204,10 +212,12 @@ func (m Model) alerts() string {
 
 func (m Model) footer(vp interface{ ScrollPercent() float64 }) string {
 	help := "tab/1-5 abas · g relatório do dia · j/k rolar · r atualizar · q sair"
-	if m.report {
+	if m.detail {
+		help = "esc/q voltar · o abrir no navegador · j/k rolar"
+	} else if m.report {
 		help = "esc/q voltar · j/k rolar · r atualizar"
 	} else if m.tab == tabGitLab || m.tab == tabJira {
-		help = "j/k selecionar · o abrir no navegador · r atualizar · q sair"
+		help = "j/k selecionar · enter detalhes · o navegador · r atualizar · q sair"
 	} else if m.tab == tabTarefas {
 		if m.adding {
 			help = "enter salvar · esc cancelar"

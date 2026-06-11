@@ -25,14 +25,26 @@ func New(base, token string) *Client {
 }
 
 type MR struct {
-	IID        int    `json:"iid"`
-	Title      string `json:"title"`
-	WebURL     string `json:"web_url"`
-	References struct {
+	IID         int    `json:"iid"`
+	ProjectID   int    `json:"project_id"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	WebURL      string `json:"web_url"`
+	References  struct {
 		Full string `json:"full"`
 	} `json:"references"`
 	UpdatedAt time.Time  `json:"updated_at"`
 	MergedAt  *time.Time `json:"merged_at"`
+}
+
+// Note é um comentário de um MR.
+type Note struct {
+	Body   string `json:"body"`
+	System bool   `json:"system"`
+	Author struct {
+		Name string `json:"name"`
+	} `json:"author"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type user struct {
@@ -104,6 +116,17 @@ func (c *Client) get(path string, q url.Values, out any) error {
 		return fmt.Errorf("GitLab %s: HTTP %d", path, resp.StatusCode)
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+// MRNotes devolve os comentários (notas) de um MR, em ordem cronológica.
+func (c *Client) MRNotes(projectID, iid int) ([]Note, error) {
+	q := url.Values{"sort": {"asc"}, "order_by": {"created_at"}, "per_page": {"50"}}
+	var notes []Note
+	path := fmt.Sprintf("/projects/%d/merge_requests/%d/notes", projectID, iid)
+	if err := c.get(path, q, &notes); err != nil {
+		return nil, err
+	}
+	return notes, nil
 }
 
 func (c *Client) Fetch() (*Summary, error) {

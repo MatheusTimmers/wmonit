@@ -213,6 +213,84 @@ func (c *Client) resolveCXField() string {
 	return ""
 }
 
+type IssueDetail struct {
+	Key         string
+	Summary     string
+	Status      string
+	Description string
+	Comments    []Comment
+}
+
+type Comment struct {
+	Author  string
+	Body    string
+	Created string // YYYY-MM-DD
+}
+
+// textOf extrai texto de um campo que pode ser string (Jira Server/DC) ou
+// um objeto rich text/ADF (Jira Cloud); nesse caso devolve um aviso.
+func textOf(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	return "(conteúdo em rich text — abra no navegador com 'o')"
+}
+
+func (c *Client) doIssue(path string) (*IssueDetail, int, error) {
+	q := url.Values{"fields": {"summary,status,description,comment"}}
+	var resp struct {
+		Key    string `json:"key"`
+		Fields struct {
+			Summary     string          `json:"summary"`
+			Description json.RawMessage `json:"description"`
+			Status      struct {
+				Name string `json:"name"`
+			} `json:"status"`
+			Comment struct {
+				Comments []struct {
+					Author struct {
+						DisplayName string `json:"displayName"`
+					} `json:"author"`
+					Body    json.RawMessage `json:"body"`
+					Created string          `json:"created"`
+				} `json:"comments"`
+			} `json:"comment"`
+		} `json:"fields"`
+	}
+	code, err := c.get(path, q, &resp)
+	if err != nil {
+		return nil, code, err
+	}
+	d := &IssueDetail{
+		Key:         resp.Key,
+		Summary:     resp.Fields.Summary,
+		Status:      resp.Fields.Status.Name,
+		Description: textOf(resp.Fields.Description),
+	}
+	for _, cm := range resp.Fields.Comment.Comments {
+		d.Comments = append(d.Comments, Comment{
+			Author:  cm.Author.DisplayName,
+			Body:    textOf(cm.Body),
+			Created: dateOnly(cm.Created),
+		})
+	}
+	return d, code, nil
+}
+
+// IssueDetail busca descrição e comentários de uma issue, com o mesmo
+// fallback de endpoint do search para o Jira Cloud.
+func (c *Client) IssueDetail(key string) (*IssueDetail, error) {
+	d, code, err := c.doIssue("/rest/api/2/issue/" + key)
+	if code == http.StatusGone || code == http.StatusNotFound {
+		d, _, err = c.doIssue("/rest/api/3/issue/" + key)
+	}
+	return d, err
+}
+
 func (c *Client) Fetch() (*Summary, error) {
 	if c.base == "" || c.token == "" {
 		return nil, fmt.Errorf("Jira não configurado — defina url e token em %s", "~/.config/wmonit/config.toml")
