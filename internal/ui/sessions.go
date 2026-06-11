@@ -241,6 +241,26 @@ func (m Model) sessionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if s := m.selectedSession(); s != nil && (s.Status == session.StatusPending || s.Status == session.StatusFailed) {
 			return m.startRun(s)
 		}
+	case "v":
+		if s := m.selectedSession(); s != nil && s.Active() {
+			return m.openDiff(*s)
+		}
+	case "e":
+		if s := m.selectedSession(); s != nil && s.Active() {
+			return m, openEditorCmd(s.Worktree)
+		}
+	case "f":
+		if s := m.selectedSession(); s != nil && (s.Status == session.StatusDone || s.Status == session.StatusFailed || s.Status == session.StatusPending) {
+			return m, m.finishSessionCmd(*s, false)
+		}
+	case "F":
+		if s := m.selectedSession(); s != nil && s.Active() && s.Status != session.StatusRunning {
+			return m, m.finishSessionCmd(*s, true)
+		}
+	case "x":
+		if s := m.selectedSession(); s != nil {
+			return m.cancelSession(s)
+		}
 	case "d":
 		if s := m.selectedSession(); s != nil {
 			return m, m.removeSessionCmd(*s, false)
@@ -277,6 +297,59 @@ func (m Model) removeSessionCmd(s session.Session, force bool) tea.Cmd {
 	}
 }
 
+// openDiff mostra o diff do worktree no painel de detalhes.
+func (m Model) openDiff(s session.Session) (tea.Model, tea.Cmd) {
+	m.detail = true
+	m.detailLoading = true
+	m.detailBody = ""
+	m.detailTitle = "diff " + s.Key
+	m.detailURL = s.URL
+	m.vp.GotoTop()
+	return m, func() tea.Msg {
+		d, err := worktree.Diff(s.Worktree)
+		if err != nil {
+			return detailMsg{err: err}
+		}
+		if strings.TrimSpace(d) == "" {
+			d = dim.Render("(sem mudanças no worktree)")
+		}
+		return detailMsg{body: d}
+	}
+}
+
+// finishSessionCmd conclui a sessão: remove o worktree (com guarda de
+// mudanças não commitadas, a menos que force) e marca como concluída.
+func (m Model) finishSessionCmd(s session.Session, force bool) tea.Cmd {
+	return func() tea.Msg {
+		if s.Worktree != "" {
+			if err := worktree.Remove(s.Repo, s.Worktree, force); err != nil {
+				if !force {
+					return sessActionMsg{id: s.ID, err: fmt.Errorf("%w (commits do Claude ficam na branch; use F para descartar o resto)", err)}
+				}
+				return sessActionMsg{id: s.ID, err: err}
+			}
+		}
+		return sessActionMsg{id: s.ID, status: session.StatusCompleted}
+	}
+}
+
+// cancelSession mata a execução em andamento (se houver) e marca a
+// sessão como cancelada; o worktree fica para inspeção (remova com d/D).
+func (m Model) cancelSession(s *session.Session) (tea.Model, tea.Cmd) {
+	if h, ok := m.handles[s.ID]; ok {
+		h.Kill()
+		delete(m.handles, s.ID)
+	}
+	if s.Status == session.StatusRunning || s.Status == session.StatusPending {
+		s.Status = session.StatusCancelled
+		now := time.Now()
+		s.Finished = &now
+		m.sess.Save()
+		m.sessInfo = warnStyle.Render("sessão " + s.Key + " cancelada — worktree mantido (d remove)")
+	}
+	return m, nil
+}
+
 var jiraKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]*-\d+$`)
 
 // startRun marca a sessão como rodando e dispara a execução headless do
@@ -303,6 +376,8 @@ func (m Model) startRun(s *session.Session) (tea.Model, tea.Cmd) {
 			}
 		}
 	}
+	h := &claude.Handle{}
+	m.handles[s.ID] = h
 	tick := sessTick()
 	run := func() tea.Msg {
 		d := desc
@@ -313,7 +388,7 @@ func (m Model) startRun(s *session.Session) (tea.Model, tea.Cmd) {
 			}
 		}
 		prompt := claude.BuildPrompt(sess.Key, sess.Title, sess.URL, d, cfg.Claude.Templates[sess.Service])
-		err := claude.Run(cfg.Claude.Bin, sess.Worktree, prompt, sess.LogFile, sess.ClaudeID)
+		err := claude.Run(cfg.Claude.Bin, sess.Worktree, prompt, sess.LogFile, sess.ClaudeID, h)
 		return sessFinishedMsg{id: sess.ID, prompt: prompt, err: err}
 	}
 	return m, tea.Batch(run, tick)
