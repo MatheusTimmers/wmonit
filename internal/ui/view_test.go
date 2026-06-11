@@ -11,7 +11,7 @@ import (
 func TestStartOfWeek(t *testing.T) {
 	want := time.Date(2026, 6, 8, 0, 0, 0, 0, time.Local) // segunda
 	for _, d := range []time.Time{
-		time.Date(2026, 6, 8, 0, 0, 1, 0, time.Local),  // segunda
+		time.Date(2026, 6, 8, 0, 0, 1, 0, time.Local),   // segunda
 		time.Date(2026, 6, 10, 15, 0, 0, 0, time.Local), // quarta
 		time.Date(2026, 6, 14, 23, 0, 0, 0, time.Local), // domingo
 	} {

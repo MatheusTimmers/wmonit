@@ -26,6 +26,7 @@ var (
 	cursorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("212"))
 	barStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
 	barStyle2   = lipgloss.NewStyle().Foreground(lipgloss.Color("141"))
+	alertStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("0")).Background(lipgloss.Color("214"))
 )
 
 var tabNames = []string{"Hoje", "Desempenho", "GitLab", "Jira", "Tarefas"}
@@ -118,9 +119,9 @@ func fmtNum(p float64) string {
 func (m Model) View() string {
 	var b strings.Builder
 
+	var topRow string
 	if m.report {
-		b.WriteString(tabActive.Render("📋 Relatório do dia") +
-			tabInactive.Render(m.reportSummary()))
+		topRow = tabActive.Render("📋 Relatório do dia") + tabInactive.Render(m.reportSummary())
 	} else {
 		var tabsRow []string
 		for i, name := range tabNames {
@@ -131,8 +132,12 @@ func (m Model) View() string {
 				tabsRow = append(tabsRow, tabInactive.Render(label))
 			}
 		}
-		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, tabsRow...))
+		topRow = lipgloss.JoinHorizontal(lipgloss.Top, tabsRow...)
 	}
+	if a := m.alerts(); a != "" {
+		topRow = lipgloss.JoinHorizontal(lipgloss.Top, topRow, "  ", a)
+	}
+	b.WriteString(topRow)
 	b.WriteString("\n")
 
 	vp := m.vp
@@ -162,6 +167,40 @@ func (m Model) content() string {
 		return m.viewTarefas()
 	}
 	return ""
+}
+
+// alerts resume os itens que pedem atenção — vencendo hoje/atrasados e
+// reviews aguardando você — num realce no topo. Devolve "" se não há nada.
+func (m Model) alerts() string {
+	today := time.Now().Format("2006-01-02")
+	due := 0
+	if m.ji != nil {
+		for _, is := range m.ji.Open {
+			if is.Due != "" && is.Due <= today {
+				due++
+			}
+		}
+	}
+	for _, t := range m.store.Tasks {
+		if !t.Done && t.Due != "" && t.Due <= today {
+			due++
+		}
+	}
+	reviews := 0
+	if m.gl != nil {
+		reviews = len(m.gl.ReviewPending)
+	}
+	var parts []string
+	if due > 0 {
+		parts = append(parts, fmt.Sprintf("⚠ %d vencendo/atrasado", due))
+	}
+	if reviews > 0 {
+		parts = append(parts, fmt.Sprintf("👀 %d review aguardando", reviews))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return alertStyle.Render(" " + strings.Join(parts, " · ") + " ")
 }
 
 func (m Model) footer(vp interface{ ScrollPercent() float64 }) string {
@@ -433,6 +472,7 @@ func (m Model) viewDesempenho() string {
 	now := time.Now()
 	today := now.Format("2006-01-02")
 	weekStart := startOfWeek(now)
+	curDayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
 	curStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local)
 	prevStart := curStart.AddDate(0, -1, 0)
 	prevEndDate := curStart.AddDate(0, 0, -1).Format("2006-01-02")
@@ -465,24 +505,57 @@ func (m Model) viewDesempenho() string {
 	}
 	b.WriteString("\n")
 
-	// Tendência: mês atual até hoje vs o mesmo nº de dias do mês anterior.
+	// Tendência: dia, semana e mês, cada um contra o período anterior
+	// equivalente (mesmo nº de dias decorridos), para um termômetro justo.
+	b.WriteString(section.Render("⚖ Tendência") + "\n")
+
+	// Hoje vs ontem.
+	yStart := curDayStart.AddDate(0, 0, -1)
+	yDate := yStart.Format("2006-01-02")
+	b.WriteString(dim.Render("  hoje vs ontem") + "\n")
+	if m.gl != nil {
+		c := len(mergedIn(m.gl.Merged, curDayStart, now))
+		p := len(mergedIn(m.gl.Merged, yStart, curDayStart))
+		b.WriteString(trendLine("MRs mergeados", float64(c), float64(p), false) + "\n")
+	}
+	if m.ji != nil {
+		c := len(resolvedIn(m.ji.Resolved, today, today))
+		p := len(resolvedIn(m.ji.Resolved, yDate, yDate))
+		b.WriteString(trendLine("Issues resolvidas", float64(c), float64(p), false) + "\n")
+	}
+
+	// Esta semana vs a passada, até o mesmo momento da semana.
+	elapsed := now.Sub(weekStart)
+	lastWeekStart := weekStart.AddDate(0, 0, -7)
+	lastWeekEnd := lastWeekStart.Add(elapsed)
+	b.WriteString(dim.Render(fmt.Sprintf("  esta semana vs passada (até %s)", now.Format("02/01"))) + "\n")
+	if m.gl != nil {
+		c := len(mergedIn(m.gl.Merged, weekStart, now))
+		p := len(mergedIn(m.gl.Merged, lastWeekStart, lastWeekEnd))
+		b.WriteString(trendLine("MRs mergeados", float64(c), float64(p), false) + "\n")
+	}
+	if m.ji != nil {
+		c := len(resolvedIn(m.ji.Resolved, weekStart.Format("2006-01-02"), today))
+		p := len(resolvedIn(m.ji.Resolved, lastWeekStart.Format("2006-01-02"), lastWeekEnd.Format("2006-01-02")))
+		b.WriteString(trendLine("Issues resolvidas", float64(c), float64(p), false) + "\n")
+	}
+
+	// Este mês até hoje vs o mesmo nº de dias do mês anterior.
 	prevCmpEnd := prevStart.AddDate(0, 0, now.Day()-1)
 	if !prevCmpEnd.Before(curStart) {
 		prevCmpEnd = curStart.AddDate(0, 0, -1)
 	}
-	b.WriteString(section.Render(fmt.Sprintf("⚖ Tendência — %s vs %s, até o dia %d de cada mês",
-		ptMonth(curStart), ptMonth(prevStart), prevCmpEnd.Day())) + "\n")
-
 	var curResolved, prevResolved, prevMonthAll []jira.Issue
 	if m.ji != nil {
 		curResolved = resolvedIn(m.ji.Resolved, dCur, today)
 		prevResolved = resolvedIn(m.ji.Resolved, dPrev, prevCmpEnd.Format("2006-01-02"))
 		prevMonthAll = resolvedIn(m.ji.Resolved, dPrev, prevEndDate)
 	}
+	b.WriteString(dim.Render(fmt.Sprintf("  %s vs %s (até o dia %d)", ptMonth(curStart), ptMonth(prevStart), prevCmpEnd.Day())) + "\n")
 	if m.gl != nil {
-		cur := len(mergedIn(m.gl.Merged, curStart, now))
-		prev := len(mergedIn(m.gl.Merged, prevStart, prevCmpEnd.AddDate(0, 0, 1)))
-		b.WriteString(trendLine("MRs mergeados", float64(cur), float64(prev), false) + "\n")
+		c := len(mergedIn(m.gl.Merged, curStart, now))
+		p := len(mergedIn(m.gl.Merged, prevStart, prevCmpEnd.AddDate(0, 0, 1)))
+		b.WriteString(trendLine("MRs mergeados", float64(c), float64(p), false) + "\n")
 	}
 	if m.ji != nil {
 		b.WriteString(trendLine("Issues resolvidas", float64(len(curResolved)), float64(len(prevResolved)), false) + "\n")
@@ -589,10 +662,14 @@ func (m Model) viewGitLab() string {
 	}
 	var b strings.Builder
 	now := time.Now()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local)
 	merged := mergedIn(m.gl.Merged, startOfWeek(now), now)
-	b.WriteString(section.Render("📊 Esta semana — @"+m.gl.Username) + "\n")
-	b.WriteString(fmt.Sprintf("  MRs mergeados: %d · MRs abertos: %d · reviews pendentes: %d\n\n",
-		len(merged), len(m.gl.OpenMRs), len(m.gl.ReviewPending)))
+	b.WriteString(section.Render("📊 @"+m.gl.Username) + "\n")
+	b.WriteString(fmt.Sprintf("  MRs mergeados — hoje: %d · semana: %d · mês: %d\n",
+		len(mergedIn(m.gl.Merged, dayStart, now)), len(merged), len(mergedIn(m.gl.Merged, monthStart, now))))
+	b.WriteString(fmt.Sprintf("  MRs abertos: %d · reviews pendentes: %d\n\n",
+		len(m.gl.OpenMRs), len(m.gl.ReviewPending)))
 
 	b.WriteString(section.Render("📬 MRs abertos") + "\n")
 	writeMRs(&b, m.gl.OpenMRs)
@@ -620,17 +697,6 @@ func renderMR(mr gitlab.MR) string {
 	}
 	if t := mr.Kind(); t != "" {
 		s += dim.Render(" [" + t + "]")
-	}
-	return s
-}
-
-func renderIssue(is jira.Issue) string {
-	s := warnStyle.Render(is.Key) + " " + is.Summary + dim.Render(" ["+is.Status+"]") + prioBadge(is.Priority)
-	if is.Complexity != "" {
-		s += dim.Render(" · cx " + is.Complexity)
-	}
-	if is.Due != "" {
-		s += dim.Render(" (vence " + is.Due + ")")
 	}
 	return s
 }
@@ -667,19 +733,15 @@ func (m Model) viewJira() string {
 		return dim.Render("carregando…")
 	}
 	var b strings.Builder
-	weekStartD := startOfWeek(time.Now()).Format("2006-01-02")
-	resolvedWeek := resolvedIn(m.ji.Resolved, weekStartD, time.Now().Format("2006-01-02"))
+	now := time.Now()
+	today := now.Format("2006-01-02")
+	weekStartD := startOfWeek(now).Format("2006-01-02")
+	monthStartD := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local).Format("2006-01-02")
+	resolvedWeek := resolvedIn(m.ji.Resolved, weekStartD, today)
 	b.WriteString(section.Render("📊 Resumo") + "\n")
-	b.WriteString(fmt.Sprintf("  abertas: %d · resolvidas nesta semana: %d · na sprint: %d\n\n",
-		len(m.ji.Open), len(resolvedWeek), len(m.ji.Sprint)))
-
-	if len(m.ji.Sprint) > 0 {
-		b.WriteString(section.Render("🏃 Sprint atual") + "\n")
-		for _, is := range m.ji.Sprint {
-			b.WriteString("  " + renderIssue(is) + "\n")
-		}
-		b.WriteString("\n")
-	}
+	b.WriteString(fmt.Sprintf("  resolvidas — hoje: %d · semana: %d · mês: %d\n",
+		len(resolvedIn(m.ji.Resolved, today, today)), len(resolvedWeek), len(resolvedIn(m.ji.Resolved, monthStartD, today))))
+	b.WriteString(fmt.Sprintf("  abertas: %d\n\n", len(m.ji.Open)))
 
 	if len(m.ji.Open) == 0 {
 		b.WriteString(section.Render("📋 Suas issues abertas") + "\n")
