@@ -55,14 +55,34 @@ func DetectServices(sourcesDir string) ([]string, error) {
 	return names, nil
 }
 
-// Add cria um worktree de repo em path. Com create=true cria a branch;
-// senão usa a branch existente (local ou de origin, após um fetch).
+// Add cria um worktree de repo em path. Com create=true cria a branch a
+// partir do default do remoto (origin/HEAD) atualizado — não do HEAD
+// local, que pode estar em qualquer branch/estado; se a branch já existir
+// (ex.: sessão anterior da mesma issue), ela é reaproveitada. Senão usa a
+// branch existente (local ou de origin, após um fetch).
 func Add(repo, path, branch string, create bool) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 	if create {
-		_, err := git(repo, "worktree", "add", "-b", branch, path)
+		if _, err := git(repo, "rev-parse", "--verify", "refs/heads/"+branch); err == nil {
+			create = false // branch já existe — reaproveita em vez de falhar no -b
+		}
+	}
+	if create {
+		base := "HEAD" // repo sem remoto (ou offline): cria do HEAD mesmo
+		if _, err := git(repo, "fetch", "origin"); err == nil {
+			out, err := git(repo, "rev-parse", "--abbrev-ref", "origin/HEAD")
+			if err != nil {
+				// origin/HEAD não definido localmente: pergunta ao remoto.
+				_, _ = git(repo, "remote", "set-head", "origin", "--auto")
+				out, err = git(repo, "rev-parse", "--abbrev-ref", "origin/HEAD")
+			}
+			if err == nil {
+				base = strings.TrimSpace(out)
+			}
+		}
+		_, err := git(repo, "worktree", "add", "-b", branch, path, base)
 		return err
 	}
 	// Branch existente: tenta atualizar do remoto, mas não falha se não der

@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -38,11 +37,17 @@ type interactiveDoneMsg struct {
 }
 
 // openInteractive suspende a TUI e abre o Claude Code interativo no
-// worktree da sessão, retomando o contexto quando houver.
+// worktree da sessão. Retoma a conversa do DEV quando houver — é a que
+// pode editar código; a última fase costuma ser o review, que foi
+// instruído a só analisar. ClaudeID solto cobre sessões antigas.
 func (m Model) openInteractive(s *session.Session) (tea.Model, tea.Cmd) {
+	resume := s.ClaudeIDs[session.PhaseDev]
+	if resume == "" {
+		resume = s.ClaudeID
+	}
 	var args []string
-	if s.ClaudeID != "" {
-		args = append(args, "--resume", s.ClaudeID)
+	if resume != "" {
+		args = append(args, "--resume", resume)
 	}
 	cmd := exec.Command(m.cfg.Claude.Bin, args...)
 	cmd.Dir = s.Worktree
@@ -139,7 +144,7 @@ func (m Model) newSessionFromItem(it *focusItem) (sess session.Session, guess st
 		Key:    is.Key,
 		Title:  is.Summary,
 		URL:    strings.TrimRight(m.cfg.Jira.URL, "/") + "/browse/" + is.Key,
-		Branch: "feature/" + is.Key,
+		Branch: m.cfg.Claude.BranchPrefix + is.Key,
 		Kind:   session.KindIssue,
 	}
 	// Issue: o serviço vem de um MR já ligado pela #TAG, se houver.
@@ -336,12 +341,12 @@ func (m Model) sessionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.cursor < len(m.sess.Sessions)-1 {
 			m.cursor++
 		}
-		m.scrollToCursor()
+		m.scrollToSession()
 	case "k", "up":
 		if m.cursor > 0 {
 			m.cursor--
 		}
-		m.scrollToCursor()
+		m.scrollToSession()
 	case "o":
 		if s := m.selectedSession(); s != nil && s.URL != "" {
 			return m, openURLCmd(s.URL)
@@ -523,8 +528,6 @@ func (m Model) cancelSession(s *session.Session) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-var jiraKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]*-\d+$`)
-
 // mrRef aponta o MR da sessão (ou ligado à issue pela #TAG), com o que já
 // está em memória — os comentários são buscados depois, fora da UI.
 type mrRef struct {
@@ -682,18 +685,25 @@ func (m Model) runPhase(s *session.Session, phase, resumeID string) (tea.Model, 
 	if cached == nil {
 		mr = m.mrFor(sess) // dados do GitLab já em memória; rede fica no closure
 	}
+	opts := claude.Opts{
+		Bin:            cfg.Claude.Bin,
+		Dir:            sess.Worktree,
+		LogFile:        sess.LogFile,
+		Model:          cfg.Claude.Models[phase],
+		PermissionMode: cfg.Claude.PermissionMode,
+	}
 	h := &claude.Handle{}
 	m.handles[s.ID] = h
 	run := func() tea.Msg {
-		var prompt string
 		if resumeID != "" {
 			if phase == session.PhaseDev && verdict != "" {
-				prompt = claude.FixPrompt(verdict)
+				opts.Prompt = claude.FixPrompt(verdict)
 			} else {
-				prompt = claude.ResumePrompt()
+				opts.Prompt = claude.ResumePrompt()
 			}
-			err := claude.Run(cfg.Claude.Bin, sess.Worktree, prompt, sess.LogFile, cfg.Claude.Models[phase], resumeID, h)
-			return sessFinishedMsg{id: sess.ID, prompt: prompt, err: err}
+			opts.Resume = resumeID
+			err := claude.Run(opts, h)
+			return sessFinishedMsg{id: sess.ID, prompt: opts.Prompt, err: err}
 		}
 		ctx := cached
 		if ctx == nil {
@@ -702,14 +712,14 @@ func (m Model) runPhase(s *session.Session, phase, resumeID string) (tea.Model, 
 		}
 		switch phase {
 		case session.PhaseDev:
-			prompt = claude.DevPrompt(*ctx)
+			opts.Prompt = claude.DevPrompt(*ctx)
 		case session.PhaseReview:
-			prompt = claude.ReviewPrompt(*ctx)
+			opts.Prompt = claude.ReviewPrompt(*ctx)
 		default:
-			prompt = claude.PlanPrompt(*ctx)
+			opts.Prompt = claude.PlanPrompt(*ctx)
 		}
-		err := claude.Run(cfg.Claude.Bin, sess.Worktree, prompt, sess.LogFile, cfg.Claude.Models[phase], "", h)
-		return sessFinishedMsg{id: sess.ID, prompt: prompt, ctx: ctx, err: err}
+		err := claude.Run(opts, h)
+		return sessFinishedMsg{id: sess.ID, prompt: opts.Prompt, ctx: ctx, err: err}
 	}
 	return m, tea.Batch(run, m.maybeTick())
 }
@@ -747,58 +757,65 @@ func statusLabel(s session.Status) string {
 	return string(s)
 }
 
-// viewSessoes desenha a aba Sessões.
-func (m Model) viewSessoes() string {
+// viewSessoes desenha a aba Sessões. Devolve também a linha onde começa a
+// sessão selecionada — cada sessão ocupa 2+ linhas, então o índice do
+// cursor não serve para a rolagem.
+func (m Model) viewSessoes() (string, int) {
 	var b strings.Builder
+	sel, line := 0, 0
+	write := func(s string) {
+		b.WriteString(s)
+		line += strings.Count(s, "\n")
+	}
 	if m.sessInfo != "" {
-		b.WriteString(m.sessInfo + "\n\n")
+		write(m.sessInfo + "\n\n")
 	}
 	if len(m.sess.Sessions) == 0 {
-		b.WriteString(dim.Render("nenhuma sessão — selecione uma issue (Jira) ou MR (GitLab) e pressione 'c'") + "\n")
-		return b.String()
+		write(dim.Render("nenhuma sessão — selecione uma issue (Jira) ou MR (GitLab) e pressione 'c'") + "\n")
+		return b.String(), 0
 	}
 	for i, s := range m.sess.Sessions {
 		cursor := "  "
 		if i == m.cursor {
 			cursor = cursorStyle.Render("▌ ")
+			sel = line
 		}
-		line := cursor + statusLabel(s.Status) + "  " + warnStyle.Render(s.Key) + " " + s.Title
-		b.WriteString(line + "\n")
+		write(cursor + statusLabel(s.Status) + "  " + warnStyle.Render(s.Key) + " " + s.Title + "\n")
 		meta := "    " + s.Service + " · " + s.Branch + " · " + s.Created.Format("02/01 15:04")
 		if pl := phaseLabel(s.Phase); pl != "" {
 			meta += " · " + pl
 		}
-		b.WriteString(dim.Render(meta) + "\n")
+		write(dim.Render(meta) + "\n")
 		if s.Err != "" {
-			b.WriteString("    " + errStyle.Render(s.Err) + "\n")
+			write("    " + errStyle.Render(s.Err) + "\n")
 		}
 		if p, ok := m.progress[s.ID]; ok && s.Status == session.StatusRunning {
-			b.WriteString(dim.Render(fmt.Sprintf("    %s %s · %d turnos", m.spin.View(), phaseLabel(s.Phase), p.Turns)))
+			write(dim.Render(fmt.Sprintf("    %s %s · %d turnos", m.spin.View(), phaseLabel(s.Phase), p.Turns)))
 			if len(p.Tools) > 0 {
-				b.WriteString(dim.Render(" · " + strings.Join(p.Tools, " → ")))
+				write(dim.Render(" · " + strings.Join(p.Tools, " → ")))
 			}
-			b.WriteString("\n")
+			write("\n")
 			if p.LastText != "" {
-				b.WriteString("    " + dim.Render(truncate(p.LastText, 120)) + "\n")
+				write("    " + dim.Render(truncate(p.LastText, 120)) + "\n")
 			}
 		}
 		if s.Status == session.StatusWaiting {
 			if r := s.Results[s.Phase]; r != "" {
-				b.WriteString("    " + truncate(r, 160) + "\n")
+				write("    " + truncate(r, 160) + "\n")
 			}
 			next := session.NextPhase(s.Phase)
-			b.WriteString("    " + dim.Render("enter vê o resultado · s aprova e roda "+phaseLabel(next)) + "\n")
+			write("    " + dim.Render("enter vê o resultado · s aprova e roda "+phaseLabel(next)) + "\n")
 		}
 		if s.Status == session.StatusDone {
 			if r := s.Results[session.PhaseReview]; r != "" {
-				b.WriteString("    " + okStyle.Render(truncate(r, 200)) + "\n")
+				write("    " + okStyle.Render(truncate(r, 200)) + "\n")
 			} else if p, ok := m.progress[s.ID]; ok && p.Result != "" {
-				b.WriteString("    " + okStyle.Render(truncate(p.Result, 200)) + "\n")
+				write("    " + okStyle.Render(truncate(p.Result, 200)) + "\n")
 			}
-			b.WriteString("    " + dim.Render("enter vê o veredito · s corrige os ajustes · f conclui") + "\n")
+			write("    " + dim.Render("enter vê o veredito · s corrige os ajustes · f conclui") + "\n")
 		}
 	}
-	return b.String()
+	return b.String(), sel
 }
 
 // truncate corta o texto numa linha só, com reticências.

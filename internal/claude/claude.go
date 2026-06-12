@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -29,14 +30,15 @@ func (h *Handle) set(cmd *exec.Cmd) bool {
 	return true
 }
 
-// Kill encerra o processo da sessão (ou impede que comece, se ainda não
-// começou). É seguro chamar de outra goroutine.
+// Kill encerra a árvore de processos da sessão — o claude e o que ele
+// disparou (builds, git…) — ou impede que comece, se ainda não começou.
+// É seguro chamar de outra goroutine.
 func (h *Handle) Kill() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.killed = true
 	if h.cmd != nil && h.cmd.Process != nil {
-		_ = h.cmd.Process.Kill()
+		killTree(h.cmd.Process)
 	}
 }
 
@@ -47,32 +49,50 @@ func (h *Handle) Killed() bool {
 	return h.killed
 }
 
-// Run executa o Claude Code em dir com o prompt, gravando stdout
-// (stream-json) e stderr em logFile, e espera terminar. model (alias ou
-// id; vazio = default do CLI) escolhe o modelo. resume, se não vazio,
-// retoma uma sessão anterior do Claude. h (opcional) permite cancelar
-// pelo Kill. Bloqueia até o fim.
-func Run(bin, dir, prompt, logFile, model, resume string, h *Handle) error {
-	if err := os.MkdirAll(filepath.Dir(logFile), 0o755); err != nil {
+// Opts descreve uma execução headless do Claude Code.
+type Opts struct {
+	Bin     string // binário do Claude Code
+	Dir     string // diretório de trabalho (worktree da sessão)
+	Prompt  string // prompt da fase — vai por stdin, sem limite de argv
+	LogFile string // onde gravar stdout (stream-json) e stderr
+	Model   string // alias ou id; vazio = default do CLI
+	Resume  string // session_id para retomar uma conversa; vazio = nova
+	// PermissionMode é o --permission-mode da execução. Em modo headless
+	// não há quem aprove ferramenta — sem isso edições e bash são negados
+	// e o pipeline trava. Vazio = default do CLI.
+	PermissionMode string
+}
+
+// Run executa o Claude Code conforme o, gravando a saída em o.LogFile, e
+// espera terminar. O prompt entra por stdin: linha de comando tem limite
+// de tamanho (especialmente no Windows) e vaza na lista de processos.
+// h (opcional) permite cancelar pelo Kill. Bloqueia até o fim.
+func Run(o Opts, h *Handle) error {
+	if err := os.MkdirAll(filepath.Dir(o.LogFile), 0o755); err != nil {
 		return err
 	}
-	f, err := os.Create(logFile)
+	f, err := os.Create(o.LogFile)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
-	args := []string{"-p", prompt, "--output-format", "stream-json", "--verbose"}
-	if model != "" {
-		args = append(args, "--model", model)
+	args := []string{"-p", "--output-format", "stream-json", "--verbose"}
+	if o.Model != "" {
+		args = append(args, "--model", o.Model)
 	}
-	if resume != "" {
-		args = append(args, "--resume", resume)
+	if o.Resume != "" {
+		args = append(args, "--resume", o.Resume)
 	}
-	cmd := exec.Command(bin, args...)
-	cmd.Dir = dir
+	if o.PermissionMode != "" {
+		args = append(args, "--permission-mode", o.PermissionMode)
+	}
+	cmd := exec.Command(o.Bin, args...)
+	cmd.Dir = o.Dir
+	cmd.Stdin = strings.NewReader(o.Prompt)
 	cmd.Stdout = f
 	cmd.Stderr = f
+	setSysProcAttr(cmd)
 	if h != nil && !h.set(cmd) {
 		return fmt.Errorf("claude: cancelado antes de iniciar")
 	}

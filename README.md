@@ -38,7 +38,7 @@ arquivo): `WMONIT_GITLAB_URL`, `WMONIT_GITLAB_TOKEN`, `WMONIT_JIRA_URL`,
 
 | Tecla            | Ação                                  |
 | ---------------- | ------------------------------------- |
-| `1`–`5` / `tab`  | troca de aba (Hoje, Desempenho, GitLab, Jira, Tarefas) |
+| `1`–`6` / `tab`  | troca de aba (Hoje, Desempenho, GitLab, Jira, Tarefas, Sessões) |
 | `j`/`k`, setas, PgUp/PgDn | rola / move o cursor da aba  |
 | `g`              | abre o relatório do dia (esc/q volta) |
 | `r`              | atualiza os dados agora               |
@@ -110,8 +110,11 @@ mesmo repositório.
 
 Nas abas GitLab/Jira, `c` cria uma sessão para o item selecionado: a TUI
 muda para a aba Sessões e abre um textbox para você explicar a tarefa
-(`ctrl+d` confirma). Uma issue Jira ganha uma branch nova `feature/ABC-123`;
-um MR usa a branch existente. O serviço (repositório em `sources_dir`) é
+(`ctrl+d` confirma). Uma issue Jira ganha uma branch nova com o nome da
+chave (`ABC-123`; defina `branch_prefix` em `[claude]` para algo como
+`feature/`), criada a partir do default do remoto (`origin/HEAD`)
+atualizado — se a branch já existir (sessão anterior da mesma issue), ela
+é reaproveitada; um MR usa a branch existente. O serviço (repositório em `sources_dir`) é
 deduzido da `#TAG`/projeto do MR; se não der, você escolhe numa lista. O
 worktree é criado em `<worktrees_dir>/<id-da-sessão>` e o pipeline inicia
 automaticamente.
@@ -146,6 +149,11 @@ plan = "opus"     # raciocínio profundo para entender e planejar
 dev = "sonnet"    # rápido e econômico com o plano já pronto
 review = "opus"   # precisão para achar bugs
 ```
+
+Como ninguém aprova ferramenta numa execução headless, o pipeline roda com
+`--permission-mode bypassPermissions` por padrão (o worktree é isolado, mas
+o agente ganha bash livre); configure `permission_mode` na seção `[claude]`
+para um modo mais restrito, ciente de que build/commit podem ser negados.
 
 O progresso (fase, turnos, ferramentas, último texto) aparece ao vivo e uma
 notificação de desktop avisa quando o pipeline termina ou falha.

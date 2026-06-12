@@ -80,6 +80,8 @@ type searchResp struct {
 		Key    string          `json:"key"`
 		Fields json.RawMessage `json:"fields"`
 	} `json:"issues"`
+	Total         int    `json:"total"`         // só no /rest/api/2/search
+	NextPageToken string `json:"nextPageToken"` // só no /rest/api/3/search/jql
 }
 
 type issueFields struct {
@@ -130,66 +132,127 @@ func complexityValue(raw json.RawMessage, field string) string {
 	return ""
 }
 
+// dateOnly converte um timestamp do Jira ("2026-06-11T23:45:00.000-0300")
+// para a data no fuso local — truncar a string usaria o fuso do servidor,
+// que perto da meia-noite desloca o dia. Datas puras passam direto.
 func dateOnly(s string) string {
+	if t, err := time.Parse("2006-01-02T15:04:05.000-0700", s); err == nil {
+		return t.In(time.Local).Format("2006-01-02")
+	}
 	if len(s) > 10 {
 		return s[:10]
 	}
 	return s
 }
 
-func (c *Client) doSearch(path, jql string, max int, cxField string) ([]Issue, int, error) {
+// pageSize é o teto real por página dos dois endpoints de busca — pedir
+// mais que isso é silenciosamente ignorado, daí a paginação abaixo.
+const pageSize = 100
+
+// doSearch executa a JQL paginando até max issues. O /rest/api/2/search
+// pagina por startAt/total; o /rest/api/3/search/jql (Cloud), por
+// nextPageToken.
+func (c *Client) doSearch(path, jql string, max int, cxField string, prios map[string]int) ([]Issue, int, error) {
 	fields := "summary,status,issuetype,duedate,created,resolutiondate,priority"
 	if cxField != "" {
 		fields += "," + cxField
 	}
-	q := url.Values{
-		"jql":        {jql},
-		"maxResults": {fmt.Sprint(max)},
-		"fields":     {fields},
-	}
-	var sr searchResp
-	code, err := c.get(path, q, &sr)
-	if err != nil {
-		return nil, code, err
-	}
-	issues := make([]Issue, 0, len(sr.Issues))
-	for _, raw := range sr.Issues {
-		var f issueFields
-		if err := json.Unmarshal(raw.Fields, &f); err != nil {
-			continue
+	tokenPaged := strings.HasSuffix(path, "/search/jql")
+	var all []Issue
+	startAt, token := 0, ""
+	for len(all) < max {
+		q := url.Values{
+			"jql":        {jql},
+			"maxResults": {fmt.Sprint(min(pageSize, max-len(all)))},
+			"fields":     {fields},
 		}
-		cx := ""
-		if cxField != "" {
-			cx = complexityValue(raw.Fields, cxField)
+		if tokenPaged {
+			if token != "" {
+				q.Set("nextPageToken", token)
+			}
+		} else if startAt > 0 {
+			q.Set("startAt", fmt.Sprint(startAt))
 		}
-		rank := 1 << 30 // sem prioridade vai para o fim
-		if n, err := strconv.Atoi(f.Priority.ID); err == nil {
-			rank = n
+		var sr searchResp
+		code, err := c.get(path, q, &sr)
+		if err != nil {
+			return nil, code, err
 		}
-		issues = append(issues, Issue{
-			Key:        raw.Key,
-			Summary:    f.Summary,
-			Status:     f.Status.Name,
-			Category:   f.Status.StatusCategory.Key,
-			Type:       f.IssueType.Name,
-			Due:        f.DueDate,
-			Created:    dateOnly(f.Created),
-			Resolved:   dateOnly(f.ResolutionDate),
-			Complexity: cx,
-			Priority:   f.Priority.Name,
-			PrioRank:   rank,
-		})
+		for _, raw := range sr.Issues {
+			var f issueFields
+			if err := json.Unmarshal(raw.Fields, &f); err != nil {
+				continue
+			}
+			cx := ""
+			if cxField != "" {
+				cx = complexityValue(raw.Fields, cxField)
+			}
+			rank := 1 << 30 // sem prioridade vai para o fim
+			if r, ok := prios[f.Priority.ID]; ok {
+				rank = r
+			} else if n, err := strconv.Atoi(f.Priority.ID); err == nil {
+				rank = n // sem a lista de prioridades, o id é o que há
+			}
+			all = append(all, Issue{
+				Key:        raw.Key,
+				Summary:    f.Summary,
+				Status:     f.Status.Name,
+				Category:   f.Status.StatusCategory.Key,
+				Type:       f.IssueType.Name,
+				Due:        f.DueDate,
+				Created:    dateOnly(f.Created),
+				Resolved:   dateOnly(f.ResolutionDate),
+				Complexity: cx,
+				Priority:   f.Priority.Name,
+				PrioRank:   rank,
+			})
+		}
+		if len(sr.Issues) == 0 {
+			break
+		}
+		startAt += len(sr.Issues)
+		token = sr.NextPageToken
+		if tokenPaged {
+			if token == "" {
+				break
+			}
+		} else if startAt >= sr.Total {
+			break
+		}
 	}
-	return issues, code, nil
+	return all, http.StatusOK, nil
 }
 
-func (c *Client) search(jql string, max int, cxField string) ([]Issue, error) {
-	issues, code, err := c.doSearch("/rest/api/2/search", jql, max, cxField)
+func (c *Client) search(jql string, max int, cxField string, prios map[string]int) ([]Issue, error) {
+	issues, code, err := c.doSearch("/rest/api/2/search", jql, max, cxField, prios)
 	// Jira Cloud removeu /rest/api/2/search; o substituto é /search/jql.
 	if code == http.StatusGone || code == http.StatusNotFound {
-		issues, _, err = c.doSearch("/rest/api/3/search/jql", jql, max, cxField)
+		issues2, _, err2 := c.doSearch("/rest/api/3/search/jql", jql, max, cxField, prios)
+		if err2 != nil {
+			// Os dois falharam: os dois erros importam para diagnosticar.
+			return nil, fmt.Errorf("%w (fallback v3: %v)", err, err2)
+		}
+		return issues2, nil
 	}
 	return issues, err
+}
+
+// resolvePriorities mapeia o id da prioridade para a posição na ordem
+// oficial (mais urgente primeiro), via /rest/api/2/priority — ids de
+// prioridades customizadas (10000+) não têm ordem numérica confiável.
+// Em erro devolve nil e o chamador cai no id numérico.
+func (c *Client) resolvePriorities() map[string]int {
+	var ps []struct {
+		ID string `json:"id"`
+	}
+	if _, err := c.get("/rest/api/2/priority", nil, &ps); err != nil {
+		return nil
+	}
+	m := make(map[string]int, len(ps))
+	for i, p := range ps {
+		m[p.ID] = i
+	}
+	return m
 }
 
 // resolveCXField devolve o id do campo de complexidade: o configurado, ou
@@ -286,7 +349,11 @@ func (c *Client) doIssue(path string) (*IssueDetail, int, error) {
 func (c *Client) IssueDetail(key string) (*IssueDetail, error) {
 	d, code, err := c.doIssue("/rest/api/2/issue/" + key)
 	if code == http.StatusGone || code == http.StatusNotFound {
-		d, _, err = c.doIssue("/rest/api/3/issue/" + key)
+		d2, _, err2 := c.doIssue("/rest/api/3/issue/" + key)
+		if err2 != nil {
+			return nil, fmt.Errorf("%w (fallback v3: %v)", err, err2)
+		}
+		return d2, nil
 	}
 	return d, err
 }
@@ -296,8 +363,9 @@ func (c *Client) Fetch() (*Summary, error) {
 		return nil, fmt.Errorf("Jira não configurado — defina url e token em %s", "~/.config/wmonit/config.toml")
 	}
 	cx := c.resolveCXField()
+	prios := c.resolvePriorities()
 
-	open, err := c.search(`assignee = currentUser() AND statusCategory != Done ORDER BY status, updated DESC`, 50, cx)
+	open, err := c.search(`assignee = currentUser() AND statusCategory != Done ORDER BY status, updated DESC`, 100, cx, prios)
 	if err != nil {
 		return nil, err
 	}
@@ -306,7 +374,7 @@ func (c *Client) Fetch() (*Summary, error) {
 	prevMonthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local).AddDate(0, -1, 0)
 	jql := fmt.Sprintf(`assignee = currentUser() AND statusCategory = Done AND resolved >= "%s" ORDER BY resolved DESC`,
 		prevMonthStart.Format("2006-01-02"))
-	resolved, err := c.search(jql, 200, cx)
+	resolved, err := c.search(jql, 500, cx, prios)
 	if err != nil {
 		return nil, err
 	}

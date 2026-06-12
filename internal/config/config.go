@@ -40,12 +40,20 @@ type Claude struct {
 	WorktreesDir string `toml:"worktrees_dir"`
 	// Binário do Claude Code; vazio = "claude" no PATH.
 	Bin string `toml:"bin"`
+	// Prefixo da branch criada para sessões de issue (ex.: "feature/").
+	// Vazio = sem prefixo: a branch é a própria chave (ABC-123).
+	BranchPrefix string `toml:"branch_prefix"`
 	// Instruções extras por serviço, anexadas ao prompt da sessão.
 	Templates map[string]string `toml:"templates"`
 	// Modelo por fase do pipeline (plan/dev/review), passado via --model.
 	// Aceita alias ("opus", "sonnet", "haiku") ou id completo; vazio usa
 	// o default do Claude Code.
 	Models map[string]string `toml:"models"`
+	// Modo de permissão das execuções headless (--permission-mode). Sem
+	// ninguém para aprovar ferramenta, o default é "bypassPermissions" —
+	// o worktree é isolado, mas o agente ganha bash livre; valores mais
+	// restritos ("acceptEdits", "default") podem travar build/commit.
+	PermissionMode string `toml:"permission_mode"`
 }
 
 type Config struct {
@@ -96,6 +104,9 @@ func Load() (Config, error) {
 	}
 	if cfg.Claude.Bin == "" {
 		cfg.Claude.Bin = "claude"
+	}
+	if cfg.Claude.PermissionMode == "" {
+		cfg.Claude.PermissionMode = "bypassPermissions"
 	}
 	// Defaults do pipeline: opus para planejar e revisar (raciocínio e
 	// precisão), sonnet para desenvolver (velocidade/custo com plano pronto).

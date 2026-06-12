@@ -18,9 +18,13 @@ func TestParseDue(t *testing.T) {
 		{"entrega @2026-06-15", "entrega", "2026-06-15", ""},
 		{"reunião @today 15:00", "reunião", today, "15:00"},
 		{"deploy @2026-06-15 09:30", "deploy", "2026-06-15", "09:30"},
-		{"hora inválida @today 99:99", "hora inválida", today, ""},
+		// Texto extra depois da tag não é descartado em silêncio: o
+		// sufixo inteiro deixa de ser tag e a tarefa fica como digitada.
+		{"hora inválida @today 99:99", "hora inválida @today 99:99", "", ""},
+		{"pagar boleto @today urgente demais", "pagar boleto @today urgente demais", "", ""},
 		{"falar com time@nelogica", "falar com time@nelogica", "", ""},
 		{"tarefa @data-invalida", "tarefa @data-invalida", "", ""},
+		{"@today", "@today", "", ""}, // tag sem descrição não vira vencimento
 	}
 	for _, c := range cases {
 		text, due, dueTime := parseDue(c.input)

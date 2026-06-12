@@ -203,7 +203,8 @@ func (m Model) content() string {
 	case tabTarefas:
 		return m.viewTarefas()
 	case tabSessoes:
-		return m.viewSessoes()
+		s, _ := m.viewSessoes()
+		return s
 	}
 	return ""
 }
@@ -263,7 +264,7 @@ func (m Model) footer(vp interface{ ScrollPercent() float64 }) string {
 		if m.adding {
 			help = "enter salvar · esc cancelar"
 		} else {
-			help = "a adicionar · espaço concluir · d apagar · j/k navegar · tab/1-5 abas · q sair"
+			help = "a adicionar · espaço concluir · d apagar · j/k navegar · tab/1-6 abas · q sair"
 		}
 	}
 	status := ""

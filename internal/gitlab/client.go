@@ -117,25 +117,68 @@ func (mr MR) ShortTitle() string {
 	return strings.Join(strings.Fields(t), " ")
 }
 
-func (c *Client) get(path string, q url.Values, out any) error {
+// getResp faz o GET e devolve a resposta com o body aberto (status já
+// validado) — a paginação precisa dos headers além do corpo.
+func (c *Client) getResp(path string, q url.Values) (*http.Response, error) {
 	u := c.base + "/api/v4" + path
 	if len(q) > 0 {
 		u += "?" + q.Encode()
 	}
 	req, err := http.NewRequest("GET", u, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req.Header.Set("PRIVATE-TOKEN", c.token)
 	resp, err := c.http.Do(req)
 	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		return nil, fmt.Errorf("GitLab %s: HTTP %d", path, resp.StatusCode)
+	}
+	return resp, nil
+}
+
+func (c *Client) get(path string, q url.Values, out any) error {
+	resp, err := c.getResp(path, q)
+	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GitLab %s: HTTP %d", path, resp.StatusCode)
-	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+// maxPages limita a paginação: 5 páginas de 100 dão folga para os dois
+// meses de MRs que o app olha, sem deixar uma consulta varrer tudo.
+const maxPages = 5
+
+// listMRs busca /merge_requests seguindo a paginação (X-Next-Page) — sem
+// isso as métricas subcontam assim que um período passa de uma página.
+func (c *Client) listMRs(q url.Values) ([]MR, error) {
+	q.Set("per_page", "100")
+	var all []MR
+	page := "1"
+	for i := 0; i < maxPages; i++ {
+		q.Set("page", page)
+		resp, err := c.getResp("/merge_requests", q)
+		if err != nil {
+			return nil, err
+		}
+		var batch []MR
+		err = json.NewDecoder(resp.Body).Decode(&batch)
+		next := resp.Header.Get("X-Next-Page")
+		resp.Body.Close()
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, batch...)
+		if next == "" {
+			break
+		}
+		page = next
+	}
+	return all, nil
 }
 
 // MRNotes devolve os comentários (notas) de um MR, em ordem cronológica.
@@ -162,38 +205,31 @@ func (c *Client) Fetch() (*Summary, error) {
 	now := time.Now()
 	prevMonthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local).AddDate(0, -1, 0)
 
-	q := url.Values{"scope": {"created_by_me"}, "state": {"opened"}, "per_page": {"50"}}
-	if err := c.get("/merge_requests", q, &s.OpenMRs); err != nil {
+	var err error
+	if s.OpenMRs, err = c.listMRs(url.Values{
+		"scope": {"created_by_me"}, "state": {"opened"},
+	}); err != nil {
 		return nil, err
 	}
-
-	q = url.Values{
+	if s.Merged, err = c.listMRs(url.Values{
 		"scope":         {"created_by_me"},
 		"state":         {"merged"},
 		"updated_after": {prevMonthStart.Format(time.RFC3339)},
-		"per_page":      {"100"},
-	}
-	if err := c.get("/merge_requests", q, &s.Merged); err != nil {
+	}); err != nil {
 		return nil, err
 	}
-
-	q = url.Values{
+	if s.Closed, err = c.listMRs(url.Values{
 		"scope":         {"created_by_me"},
 		"state":         {"closed"},
 		"updated_after": {prevMonthStart.Format(time.RFC3339)},
-		"per_page":      {"100"},
-	}
-	if err := c.get("/merge_requests", q, &s.Closed); err != nil {
+	}); err != nil {
 		return nil, err
 	}
-
-	q = url.Values{
+	if s.ReviewPending, err = c.listMRs(url.Values{
 		"scope":       {"all"},
 		"state":       {"opened"},
 		"reviewer_id": {fmt.Sprint(me.ID)},
-		"per_page":    {"50"},
-	}
-	if err := c.get("/merge_requests", q, &s.ReviewPending); err != nil {
+	}); err != nil {
 		return nil, err
 	}
 

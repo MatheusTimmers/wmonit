@@ -92,6 +92,26 @@ func TestAddListRemove(t *testing.T) {
 	}
 }
 
+// Pedir create para uma branch que já existe (sessão anterior da mesma
+// issue) deve reaproveitá-la em vez de falhar no -b.
+func TestAddCreateReusesExistingBranch(t *testing.T) {
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	os.MkdirAll(repo, 0o755)
+	newRepo(t, repo)
+	if _, err := git(repo, "branch", "feature/ABC-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	wt := filepath.Join(root, ".worktrees", "ABC-1")
+	if err := Add(repo, wt, "feature/ABC-1", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(wt, "a.txt")); err != nil {
+		t.Fatal("worktree sem os arquivos do repo:", err)
+	}
+}
+
 func TestAddExistingBranch(t *testing.T) {
 	root := t.TempDir()
 	repo := filepath.Join(root, "repo")

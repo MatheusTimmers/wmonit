@@ -36,6 +36,12 @@ weekly_issues = 0
 sources_dir = "c:/Fontes"  # pasta com os serviços (cada subpasta é um repo git)
 worktrees_dir = ""         # vazio = <sources_dir>/.worktrees
 bin = "claude"             # binário do Claude Code
+branch_prefix = ""         # prefixo da branch de sessões de issue (ex.: "feature/"); vazio = só a chave (ABC-123)
+# Modo de permissão das execuções headless (--permission-mode). Em modo
+# headless ninguém aprova ferramenta, então o default é "bypassPermissions"
+# (o worktree é isolado, mas o agente ganha bash livre). "acceptEdits" ou
+# "default" são mais seguros, porém build/commit podem ser negados.
+permission_mode = "bypassPermissions"
 
 # Instruções extras por serviço, anexadas ao prompt de cada sessão.
 # [claude.templates]
