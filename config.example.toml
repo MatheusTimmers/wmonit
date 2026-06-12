@@ -45,4 +45,4 @@ permission_mode = "bypassPermissions"
 
 # Instruções extras por serviço, anexadas ao prompt de cada sessão.
 # [claude.templates]
-# hades = "Rode os testes com 'go test ./...' antes de terminar."
+# hades = "O roteamento fica em src/router; siga o padrão dos handlers existentes."
