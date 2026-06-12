@@ -19,10 +19,16 @@ func TestViewReport(t *testing.T) {
 	old := now.AddDate(0, 0, -3)
 
 	m := Model{
-		gl: &gitlab.Summary{Merged: []gitlab.MR{
-			{IID: 1, Title: "feature nova #ABC-1 [feature]", MergedAt: &merged},
-			{IID: 2, Title: "antigo #ABC-2", MergedAt: &old},
-		}},
+		gl: &gitlab.Summary{
+			OpenMRs: []gitlab.MR{
+				{IID: 3, Title: "aberto hoje #ABC-3", CreatedAt: now},
+				{IID: 4, Title: "aberto antes #ABC-4", CreatedAt: old},
+			},
+			Merged: []gitlab.MR{
+				{IID: 1, Title: "feature nova #ABC-1 [feature]", CreatedAt: old, MergedAt: &merged},
+				{IID: 2, Title: "antigo #ABC-2", CreatedAt: old, MergedAt: &old},
+			},
+		},
 		ji: &jira.Summary{Resolved: []jira.Issue{
 			{Key: "ABC-1", Summary: "resolvida hoje", Resolved: today},
 			{Key: "ABC-9", Summary: "resolvida antes", Resolved: yesterday.Format("2006-01-02")},
@@ -36,18 +42,18 @@ func TestViewReport(t *testing.T) {
 
 	out := m.viewReport()
 
-	for _, want := range []string{"feature nova", "resolvida hoje", "tarefa de hoje"} {
+	for _, want := range []string{"feature nova", "aberto hoje", "resolvida hoje", "tarefa de hoje"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("relatório não contém %q\n%s", want, out)
 		}
 	}
-	for _, notWant := range []string{"antigo", "resolvida antes", "tarefa de ontem", "tarefa pendente"} {
+	for _, notWant := range []string{"antigo", "aberto antes", "resolvida antes", "tarefa de ontem", "tarefa pendente"} {
 		if strings.Contains(out, notWant) {
 			t.Errorf("relatório não deveria conter %q\n%s", notWant, out)
 		}
 	}
 
-	if s := m.reportSummary(); s != "1 MRs · 1 issues · 1 tarefas" {
+	if s := m.reportSummary(); s != "1 MRs abertos · 1 mergeados · 1 issues · 1 tarefas" {
 		t.Errorf("reportSummary = %q", s)
 	}
 }

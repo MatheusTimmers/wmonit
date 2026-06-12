@@ -34,6 +34,7 @@ type MR struct {
 	References   struct {
 		Full string `json:"full"`
 	} `json:"references"`
+	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at"`
 	MergedAt  *time.Time `json:"merged_at"`
 }

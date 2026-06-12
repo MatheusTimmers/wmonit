@@ -122,10 +122,13 @@ func (m Model) gitlabRows() []row {
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local)
 	merged := mergedIn(m.gl.Merged, startOfWeek(now), now)
 
+	mine := m.myMRs()
 	hdr(section.Render("📊 @" + m.gl.Username))
+	hdr(fmt.Sprintf("  MRs abertos   — hoje: %d · semana: %d · mês: %d",
+		len(createdIn(mine, dayStart, now)), len(createdIn(mine, startOfWeek(now), now)), len(createdIn(mine, monthStart, now))))
 	hdr(fmt.Sprintf("  MRs mergeados — hoje: %d · semana: %d · mês: %d",
 		len(mergedIn(m.gl.Merged, dayStart, now)), len(merged), len(mergedIn(m.gl.Merged, monthStart, now))))
-	hdr(fmt.Sprintf("  MRs abertos: %d · reviews pendentes: %d", len(m.gl.OpenMRs), len(m.gl.ReviewPending)))
+	hdr(fmt.Sprintf("  abertos agora: %d · reviews pendentes: %d", len(m.gl.OpenMRs), len(m.gl.ReviewPending)))
 	hdr("")
 
 	addMRs := func(title string, mrs []gitlab.MR) {

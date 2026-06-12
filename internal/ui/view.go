@@ -26,6 +26,7 @@ var (
 	cursorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("212"))
 	barStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
 	barStyle2   = lipgloss.NewStyle().Foreground(lipgloss.Color("141"))
+	barStyle3   = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 	alertStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("0")).Background(lipgloss.Color("214"))
 )
 
@@ -50,6 +51,36 @@ func mergedIn(mrs []gitlab.MR, start, end time.Time) []gitlab.MR {
 		if !t.Before(start) && t.Before(end) {
 			out = append(out, mr)
 		}
+	}
+	return out
+}
+
+// createdIn filtra MRs criados em [start, end).
+func createdIn(mrs []gitlab.MR, start, end time.Time) []gitlab.MR {
+	var out []gitlab.MR
+	for _, mr := range mrs {
+		if !mr.CreatedAt.Before(start) && mr.CreatedAt.Before(end) {
+			out = append(out, mr)
+		}
+	}
+	return out
+}
+
+// myMRs junta MRs abertos e mergeados sem duplicar — a base para contar
+// MRs criados por período (o dia trabalhado é o da abertura, não o do merge).
+func (m Model) myMRs() []gitlab.MR {
+	if m.gl == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []gitlab.MR
+	for _, mr := range append(append([]gitlab.MR{}, m.gl.OpenMRs...), m.gl.Merged...) {
+		id := fmt.Sprintf("%d-%d", mr.ProjectID, mr.IID)
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, mr)
 	}
 	return out
 }
@@ -533,17 +564,19 @@ func (m Model) viewDesempenho() string {
 		{ptMonth(prevStart) + " (completo)", prevStart, curStart, dPrev, prevEndDate},
 	}
 
-	b.WriteString(dim.Render(fmt.Sprintf("  %-20s %14s %8s", "", "MRs mergeados", "Issues")) + "\n")
+	mine := m.myMRs()
+	b.WriteString(dim.Render(fmt.Sprintf("  %-20s %12s %14s %8s", "", "MRs abertos", "MRs mergeados", "Issues")) + "\n")
 	for _, r := range rows {
-		mrs := 0
+		opened, mrs := 0, 0
 		if m.gl != nil {
+			opened = len(createdIn(mine, r.tStart, r.tEnd))
 			mrs = len(mergedIn(m.gl.Merged, r.tStart, r.tEnd))
 		}
 		n := 0
 		if m.ji != nil {
 			n = len(resolvedIn(m.ji.Resolved, r.dStart, r.dEnd))
 		}
-		b.WriteString(fmt.Sprintf("  %-20s %14d %8d\n", r.label, mrs, n))
+		b.WriteString(fmt.Sprintf("  %-20s %12d %14d %8d\n", r.label, opened, mrs, n))
 	}
 	b.WriteString("\n")
 
@@ -573,8 +606,11 @@ func (m Model) viewDesempenho() string {
 	yDate := yStart.Format("2006-01-02")
 	b.WriteString(dim.Render("  hoje vs ontem") + "\n")
 	if m.gl != nil {
-		c := len(mergedIn(m.gl.Merged, curDayStart, now))
-		p := len(mergedIn(m.gl.Merged, yStart, curDayStart))
+		c := len(createdIn(mine, curDayStart, now))
+		p := len(createdIn(mine, yStart, curDayStart))
+		b.WriteString(trendLine("MRs abertos", float64(c), float64(p), false) + "\n")
+		c = len(mergedIn(m.gl.Merged, curDayStart, now))
+		p = len(mergedIn(m.gl.Merged, yStart, curDayStart))
 		b.WriteString(trendLine("MRs mergeados", float64(c), float64(p), false) + "\n")
 	}
 	if m.ji != nil {
@@ -589,8 +625,11 @@ func (m Model) viewDesempenho() string {
 	lastWeekEnd := lastWeekStart.Add(elapsed)
 	b.WriteString(dim.Render(fmt.Sprintf("  esta semana vs passada (até %s)", now.Format("02/01"))) + "\n")
 	if m.gl != nil {
-		c := len(mergedIn(m.gl.Merged, weekStart, now))
-		p := len(mergedIn(m.gl.Merged, lastWeekStart, lastWeekEnd))
+		c := len(createdIn(mine, weekStart, now))
+		p := len(createdIn(mine, lastWeekStart, lastWeekEnd))
+		b.WriteString(trendLine("MRs abertos", float64(c), float64(p), false) + "\n")
+		c = len(mergedIn(m.gl.Merged, weekStart, now))
+		p = len(mergedIn(m.gl.Merged, lastWeekStart, lastWeekEnd))
 		b.WriteString(trendLine("MRs mergeados", float64(c), float64(p), false) + "\n")
 	}
 	if m.ji != nil {
@@ -612,8 +651,11 @@ func (m Model) viewDesempenho() string {
 	}
 	b.WriteString(dim.Render(fmt.Sprintf("  %s vs %s (até o dia %d)", ptMonth(curStart), ptMonth(prevStart), prevCmpEnd.Day())) + "\n")
 	if m.gl != nil {
-		c := len(mergedIn(m.gl.Merged, curStart, now))
-		p := len(mergedIn(m.gl.Merged, prevStart, prevCmpEnd.AddDate(0, 0, 1)))
+		c := len(createdIn(mine, curStart, now))
+		p := len(createdIn(mine, prevStart, prevCmpEnd.AddDate(0, 0, 1)))
+		b.WriteString(trendLine("MRs abertos", float64(c), float64(p), false) + "\n")
+		c = len(mergedIn(m.gl.Merged, curStart, now))
+		p = len(mergedIn(m.gl.Merged, prevStart, prevCmpEnd.AddDate(0, 0, 1)))
 		b.WriteString(trendLine("MRs mergeados", float64(c), float64(p), false) + "\n")
 	}
 	if m.ji != nil {
@@ -629,13 +671,13 @@ func (m Model) viewDesempenho() string {
 	// mês anterior, para enxergar aceleração ou queda ao longo do tempo.
 	b.WriteString(section.Render("📅 Ritmo semanal") + "\n")
 	const barWidth = 12
-	b.WriteString(dim.Render(fmt.Sprintf("  %-13s %-*s %-*s", "seg–dom", barWidth+3, "MRs mergeados", barWidth+3, "issues resolvidas")) + "\n")
+	b.WriteString(dim.Render(fmt.Sprintf("  %-13s %-*s %-*s %-*s", "seg–dom", barWidth+3, "MRs abertos", barWidth+3, "MRs mergeados", barWidth+3, "issues resolvidas")) + "\n")
 	type wk struct {
-		label    string
-		mrs, iss int
+		label            string
+		opened, mrs, iss int
 	}
 	var weeks []wk
-	maxMRs, maxIss := 0, 0
+	maxOpened, maxMRs, maxIss := 0, 0, 0
 	for ws := startOfWeek(prevStart); ws.Before(now); ws = ws.AddDate(0, 0, 7) {
 		we := ws.AddDate(0, 0, 7)
 		w := wk{label: ws.Format("02/01") + "–" + we.AddDate(0, 0, -1).Format("02/01")}
@@ -643,17 +685,20 @@ func (m Model) viewDesempenho() string {
 			w.label += "*"
 		}
 		if m.gl != nil {
+			w.opened = len(createdIn(mine, ws, we))
 			w.mrs = len(mergedIn(m.gl.Merged, ws, we))
 		}
 		if m.ji != nil {
 			w.iss = len(resolvedIn(m.ji.Resolved, ws.Format("2006-01-02"), we.AddDate(0, 0, -1).Format("2006-01-02")))
 		}
+		maxOpened = max(maxOpened, w.opened)
 		maxMRs = max(maxMRs, w.mrs)
 		maxIss = max(maxIss, w.iss)
 		weeks = append(weeks, w)
 	}
 	for _, w := range weeks {
 		b.WriteString("  " + dim.Render(fmt.Sprintf("%-13s", w.label)) + " " +
+			barCell(barStyle3, w.opened, maxOpened, barWidth) + " " +
 			barCell(barStyle, w.mrs, maxMRs, barWidth) + " " +
 			barCell(barStyle2, w.iss, maxIss, barWidth) + "\n")
 	}
