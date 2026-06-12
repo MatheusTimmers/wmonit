@@ -99,11 +99,13 @@ func Load() (Config, error) {
 	}
 	// Defaults do pipeline: opus para planejar e revisar (raciocínio e
 	// precisão), sonnet para desenvolver (velocidade/custo com plano pronto).
+	// Só preenche chave AUSENTE — valor vazio explícito significa "use o
+	// default do próprio Claude Code" (sem --model).
 	if cfg.Claude.Models == nil {
 		cfg.Claude.Models = map[string]string{}
 	}
 	for phase, model := range map[string]string{"plan": "opus", "dev": "sonnet", "review": "opus"} {
-		if cfg.Claude.Models[phase] == "" {
+		if _, ok := cfg.Claude.Models[phase]; !ok {
 			cfg.Claude.Models[phase] = model
 		}
 	}

@@ -87,6 +87,26 @@ func DevPrompt(c TaskContext) string {
 	return b.String()
 }
 
+// ResumePrompt retoma uma conversa interrompida da fase.
+func ResumePrompt() string {
+	return "Continue a tarefa de onde parou, seguindo as instruções anteriores. Revise o estado atual do repositório antes de prosseguir."
+}
+
+// FixPrompt retoma a conversa do agente de desenvolvimento para aplicar
+// as correções apontadas pelo review.
+func FixPrompt(verdict string) string {
+	var b strings.Builder
+	b.WriteString("Um agente revisou o seu trabalho nesta branch e apontou ajustes. Veredito do review:\n\n")
+	b.WriteString(strings.TrimSpace(verdict))
+	b.WriteString("\n\nAplique as correções necessárias:\n")
+	b.WriteString("- Revise o estado atual do repositório antes de mexer.\n")
+	b.WriteString("- Corrija os problemas apontados; se discordar de algum, justifique no resumo final.\n")
+	b.WriteString("- Rode build e testes para validar.\n")
+	fmt.Fprintf(&b, "- Faça commits pequenos com mensagens claras; NÃO faça push e NÃO commite o %s.\n", PlanFile)
+	b.WriteString("- Ao final, resuma o que foi corrigido.\n")
+	return b.String()
+}
+
 // ReviewPrompt: agente 3 — revisa o que foi desenvolvido e só reporta.
 func ReviewPrompt(c TaskContext) string {
 	var b strings.Builder

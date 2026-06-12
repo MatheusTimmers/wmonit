@@ -122,11 +122,20 @@ sua explicação, descrição e comentários da issue no Jira, descrição e
 comentários do MR ligado, e o template do serviço (`[claude.templates]`):
 
 1. **plan** (opus) — explora o repositório (e o que já existe na branch, no
-   caso de MR) e grava o plano em `WMONIT_PLAN.md` na raiz do worktree.
+   caso de MR) e grava o plano em `WMONIT_PLAN.md` na raiz do worktree (o
+   arquivo é excluído do git via `info/exclude`, não suja o status).
 2. **dev** (sonnet) — implementa seguindo o plano, valida com build/testes
    e faz commits (sem push).
 3. **review** (opus) — revisa o diff, roda build/testes e responde com um
    veredito (APROVADO ou AJUSTES NECESSÁRIOS); não altera código.
+
+**Cada fase tem um gate manual:** ao terminar, a sessão fica
+"⏸ aguardando aprovação" — `enter` mostra o resultado da fase (e o
+`WMONIT_PLAN.md` completo) no próprio TUI, e `s` aprova e dispara a fase
+seguinte. Quando o review termina, `s` inicia o **ciclo de correção**:
+retoma a conversa do agente dev (cada fase tem sua conversa preservada)
+com o veredito do review, aplica os ajustes e volta para o gate de review.
+Numa fase que falhou, `s` tenta de novo retomando a conversa daquela fase.
 
 O modelo de cada fase é configurável em `[claude.models]` (alias `opus`/
 `sonnet`/`haiku` ou id completo, passado via `--model`):
@@ -143,8 +152,9 @@ notificação de desktop avisa quando o pipeline termina ou falha.
 
 Na aba Sessões:
 
-- `s`/`enter` — inicia o pipeline (sessão pendente/falhada) ou retoma a
-  conversa da última fase (`--resume`) em uma sessão já concluída.
+- `s` — inicia o pipeline (pendente) · aprova a fase (aguardando) · tenta
+  de novo (falhou) · ciclo de correção (pronta).
+- `enter`/`p` — resultado das fases, veredito e plano no painel de detalhes.
 - `t` — abre o Claude **interativo** no worktree (a TUI volta ao sair).
 - `v` — mostra o diff do worktree · `e` — abre no editor (`$VISUAL`/VS Code).
 - `f` — conclui: remove o worktree (recusa se houver mudanças não

@@ -24,3 +24,15 @@ func TestTitleParsing(t *testing.T) {
 		}
 	}
 }
+
+func TestSummaryMine(t *testing.T) {
+	s := &Summary{
+		OpenMRs: []MR{{ProjectID: 1, IID: 10}, {ProjectID: 1, IID: 11}},
+		Merged:  []MR{{ProjectID: 1, IID: 10}, {ProjectID: 2, IID: 10}},
+		Closed:  []MR{{ProjectID: 1, IID: 12}, {ProjectID: 1, IID: 11}},
+	}
+	mine := s.Mine()
+	if len(mine) != 4 {
+		t.Fatalf("Mine() = %d MRs, esperado 4 (dedup de abertos+mergeados+fechados)", len(mine))
+	}
+}

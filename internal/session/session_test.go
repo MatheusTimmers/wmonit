@@ -64,3 +64,26 @@ func TestLogDir(t *testing.T) {
 	}
 	_ = os.MkdirAll(LogDir(), 0o755)
 }
+
+func TestPhaseHelpers(t *testing.T) {
+	s := Session{Key: "ABC-123"}
+	if !s.IsIssue() {
+		t.Errorf("chave Jira sem Kind deveria ser issue (legado)")
+	}
+	s.Kind = KindMR
+	if s.IsIssue() {
+		t.Errorf("Kind=mr deveria vencer o formato da chave")
+	}
+	s.SetClaudeID(PhaseDev, "id-dev")
+	s.SetClaudeID(PhaseReview, "id-review")
+	if s.ClaudeIDs[PhaseDev] != "id-dev" || s.ClaudeID != "id-review" {
+		t.Errorf("SetClaudeID: ids = %v, último = %q", s.ClaudeIDs, s.ClaudeID)
+	}
+	s.SetResult(PhaseReview, "APROVADO")
+	if s.Results[PhaseReview] != "APROVADO" {
+		t.Errorf("SetResult não gravou")
+	}
+	if NextPhase(PhasePlan) != PhaseDev || NextPhase(PhaseDev) != PhaseReview || NextPhase(PhaseReview) != "" {
+		t.Errorf("NextPhase fora de ordem")
+	}
+}
