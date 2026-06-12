@@ -48,10 +48,11 @@ func (h *Handle) Killed() bool {
 }
 
 // Run executa o Claude Code em dir com o prompt, gravando stdout
-// (stream-json) e stderr em logFile, e espera terminar. resume, se não
-// vazio, retoma uma sessão anterior do Claude. h (opcional) permite
-// cancelar pelo Kill. Bloqueia até o fim.
-func Run(bin, dir, prompt, logFile, resume string, h *Handle) error {
+// (stream-json) e stderr em logFile, e espera terminar. model (alias ou
+// id; vazio = default do CLI) escolhe o modelo. resume, se não vazio,
+// retoma uma sessão anterior do Claude. h (opcional) permite cancelar
+// pelo Kill. Bloqueia até o fim.
+func Run(bin, dir, prompt, logFile, model, resume string, h *Handle) error {
 	if err := os.MkdirAll(filepath.Dir(logFile), 0o755); err != nil {
 		return err
 	}
@@ -62,6 +63,9 @@ func Run(bin, dir, prompt, logFile, resume string, h *Handle) error {
 	defer f.Close()
 
 	args := []string{"-p", prompt, "--output-format", "stream-json", "--verbose"}
+	if model != "" {
+		args = append(args, "--model", model)
+	}
 	if resume != "" {
 		args = append(args, "--resume", resume)
 	}

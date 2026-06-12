@@ -42,6 +42,10 @@ type Claude struct {
 	Bin string `toml:"bin"`
 	// Instruções extras por serviço, anexadas ao prompt da sessão.
 	Templates map[string]string `toml:"templates"`
+	// Modelo por fase do pipeline (plan/dev/review), passado via --model.
+	// Aceita alias ("opus", "sonnet", "haiku") ou id completo; vazio usa
+	// o default do Claude Code.
+	Models map[string]string `toml:"models"`
 }
 
 type Config struct {
@@ -92,6 +96,16 @@ func Load() (Config, error) {
 	}
 	if cfg.Claude.Bin == "" {
 		cfg.Claude.Bin = "claude"
+	}
+	// Defaults do pipeline: opus para planejar e revisar (raciocínio e
+	// precisão), sonnet para desenvolver (velocidade/custo com plano pronto).
+	if cfg.Claude.Models == nil {
+		cfg.Claude.Models = map[string]string{}
+	}
+	for phase, model := range map[string]string{"plan": "opus", "dev": "sonnet", "review": "opus"} {
+		if cfg.Claude.Models[phase] == "" {
+			cfg.Claude.Models[phase] = model
+		}
 	}
 	return cfg, nil
 }

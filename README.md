@@ -121,12 +121,22 @@ Cada execução é um **pipeline de três agents** headless (`claude -p
 sua explicação, descrição e comentários da issue no Jira, descrição e
 comentários do MR ligado, e o template do serviço (`[claude.templates]`):
 
-1. **plan** — explora o repositório (e o que já existe na branch, no caso
-   de MR) e grava o plano em `WMONIT_PLAN.md` na raiz do worktree.
-2. **dev** — implementa seguindo o plano, valida com build/testes e faz
-   commits (sem push).
-3. **review** — revisa o diff, roda build/testes e responde com um
+1. **plan** (opus) — explora o repositório (e o que já existe na branch, no
+   caso de MR) e grava o plano em `WMONIT_PLAN.md` na raiz do worktree.
+2. **dev** (sonnet) — implementa seguindo o plano, valida com build/testes
+   e faz commits (sem push).
+3. **review** (opus) — revisa o diff, roda build/testes e responde com um
    veredito (APROVADO ou AJUSTES NECESSÁRIOS); não altera código.
+
+O modelo de cada fase é configurável em `[claude.models]` (alias `opus`/
+`sonnet`/`haiku` ou id completo, passado via `--model`):
+
+```toml
+[claude.models]
+plan = "opus"     # raciocínio profundo para entender e planejar
+dev = "sonnet"    # rápido e econômico com o plano já pronto
+review = "opus"   # precisão para achar bugs
+```
 
 O progresso (fase, turnos, ferramentas, último texto) aparece ao vivo e uma
 notificação de desktop avisa quando o pipeline termina ou falha.
