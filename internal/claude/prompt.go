@@ -51,6 +51,19 @@ func (c TaskContext) header() string {
 	if t := strings.TrimSpace(c.Template); t != "" {
 		b.WriteString("Instruções específicas deste serviço:\n" + t + "\n\n")
 	}
+	b.WriteString(buildNotes())
+	return b.String()
+}
+
+// buildNotes são as regras de build destes repositórios, iguais para todas
+// as fases — sem elas os agentes queimam tempo/tokens tentando buildar do
+// jeito errado.
+func buildNotes() string {
+	var b strings.Builder
+	b.WriteString("Build e testes neste repositório:\n")
+	b.WriteString("- ANTES de qualquer build, rode `git submodule update --init --force` — sem isso as dependências ficam erradas e o build falha.\n")
+	b.WriteString("- Builde APENAS o .dproj que tem \"app\" no nome; os outros .dproj não são o alvo.\n")
+	b.WriteString("- Se o submodule update ou o build falharem, PARE de tentar buildar: não insista com alternativas nem gaste turnos nisso. Siga com o restante da tarefa e registre no resumo final a ressalva de que o build/validação fica por conta do usuário.\n\n")
 	return b.String()
 }
 
@@ -98,7 +111,9 @@ func FixPrompt(verdict string) string {
 	var b strings.Builder
 	b.WriteString("Um agente revisou o seu trabalho nesta branch e apontou ajustes. Veredito do review:\n\n")
 	b.WriteString(strings.TrimSpace(verdict))
-	b.WriteString("\n\nAplique as correções necessárias:\n")
+	b.WriteString("\n\n")
+	b.WriteString(buildNotes())
+	b.WriteString("Aplique as correções necessárias:\n")
 	b.WriteString("- Revise o estado atual do repositório antes de mexer.\n")
 	b.WriteString("- Corrija os problemas apontados; se discordar de algum, justifique no resumo final.\n")
 	b.WriteString("- Rode build e testes para validar.\n")
@@ -116,6 +131,7 @@ func ReviewPrompt(c TaskContext) string {
 	b.WriteString("- Use git (log/diff contra a branch base) para ver todas as mudanças feitas, incluindo o que não foi commitado.\n")
 	b.WriteString("- Verifique se o plano e a tarefa foram atendidos, procure bugs, casos de borda, problemas de segurança e desvios das convenções do código.\n")
 	b.WriteString("- Rode build e testes e reporte o resultado.\n")
+	b.WriteString("- Se o build não for possível por problema de ambiente/submodule (e não do código), isso NÃO é motivo para reprovar: avalie o código e, estando ele correto, responda APROVADO com a ressalva de que o usuário fará o build por conta própria.\n")
 	b.WriteString("- Responda com um veredito: APROVADO ou AJUSTES NECESSÁRIOS, seguido da lista de problemas encontrados (arquivo:linha) por gravidade. Não corrija nada.\n")
 	return b.String()
 }
