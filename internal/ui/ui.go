@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -59,6 +60,8 @@ type Model struct {
 	sess  *session.Store
 
 	// Estado das sessões de trabalho (aba Sessões e tecla 'c').
+	describing     bool // textbox de explicação da tarefa aberto
+	descInput      textarea.Model
 	pickingService bool
 	pickOptions    []string
 	pickCursor     int
@@ -104,9 +107,12 @@ func New(cfg config.Config, store *tasks.Store) Model {
 	fi := textinput.New()
 	fi.Placeholder = "filtrar por chave, título ou status"
 	sp := spinner.New(spinner.WithSpinner(spinner.Dot))
+	ta := textarea.New()
+	ta.Placeholder = "explique o que deve ser feito nesta tarefa (contexto, restrições, o que validar)…"
+	ta.SetHeight(8)
 	hist, _ := history.Load() // sem histórico ainda não é erro fatal
 	sess, _ := session.Load() // mesmo com erro o store volta utilizável
-	return Model{cfg: cfg, store: store, hist: hist, sess: sess, input: ti, filterInput: fi, spin: sp, vp: viewport.New(80, 20), loading: 2, notified: map[string]bool{}, progress: map[string]claude.Progress{}, handles: map[string]*claude.Handle{}}
+	return Model{cfg: cfg, store: store, hist: hist, sess: sess, input: ti, filterInput: fi, descInput: ta, spin: sp, vp: viewport.New(80, 20), loading: 2, notified: map[string]bool{}, progress: map[string]claude.Progress{}, handles: map[string]*claude.Handle{}}
 }
 
 func (m Model) Init() tea.Cmd {
@@ -193,6 +199,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.input.Width = max(20, msg.Width-10)
+		m.descInput.SetWidth(max(40, msg.Width-12))
 		m.vp.Width = max(36, m.width-8)
 		m.vp.Height = max(5, m.height-5)
 		return m, nil
@@ -241,6 +248,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sess.Add(msg.sess)
 		m.sess.Save()
 		m.sessInfo = okStyle.Render("sessão criada: " + msg.sess.Key + " em " + msg.sess.Worktree)
+		// Worktree pronto → o pipeline (plan → dev → review) já inicia.
+		if s := m.sess.Find(msg.sess.ID); s != nil {
+			return m.startRun(s)
+		}
 		return m, nil
 
 	case sessTickMsg:
@@ -257,8 +268,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.sess.Save()
 				return m, nil
 			}
-			now := time.Now()
-			s.Finished = &now
 			s.Prompt = msg.prompt
 			// O log final traz o session_id do Claude (para retomar) e o resumo.
 			if s.LogFile != "" {
@@ -269,6 +278,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
+			if msg.err == nil {
+				// Fase terminou bem → avança o pipeline até o review.
+				if next := session.NextPhase(s.Phase); next != "" {
+					return m.runPhase(s, next, false)
+				}
+			}
+			now := time.Now()
+			s.Finished = &now
 			if msg.err != nil {
 				s.Status = session.StatusFailed
 				s.Err = msg.err.Error()
@@ -277,9 +294,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.sess.Save()
 			title := "wmonit — sessão " + s.Key
-			body := "Claude terminou — revise o resultado"
+			body := "pipeline concluído — revise o veredito do review"
 			if msg.err != nil {
-				body = "Claude falhou: " + s.Err
+				body = "Claude falhou na fase " + phaseLabel(s.Phase) + ": " + s.Err
 			}
 			return m, notifyCmd(title, body)
 		}
@@ -321,6 +338,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		if m.adding {
 			return m.updateAdding(msg)
+		}
+		if m.describing {
+			return m.updateDescribe(msg)
 		}
 		if m.pickingService {
 			return m.updatePickService(msg)

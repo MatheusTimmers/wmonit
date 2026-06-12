@@ -24,6 +24,24 @@ const (
 	StatusCancelled Status = "cancelled" // cancelada pelo usuário
 )
 
+// Fases do pipeline de agents de uma sessão.
+const (
+	PhasePlan   = "plan"   // agente 1: compila a tarefa e escreve o plano
+	PhaseDev    = "dev"    // agente 2: implementa seguindo o plano
+	PhaseReview = "review" // agente 3: revisa e reporta
+)
+
+// NextPhase devolve a fase seguinte do pipeline, ou "" quando acabou.
+func NextPhase(p string) string {
+	switch p {
+	case PhasePlan:
+		return PhaseDev
+	case PhaseDev:
+		return PhaseReview
+	}
+	return ""
+}
+
 // Session é uma sessão de trabalho: task + worktree + execução do Claude.
 type Session struct {
 	ID       string     `json:"id"`
@@ -35,6 +53,8 @@ type Session struct {
 	Worktree string     `json:"worktree"` // caminho do worktree
 	Branch   string     `json:"branch"`
 	Prompt   string     `json:"prompt,omitempty"`
+	UserNote string     `json:"user_note,omitempty"` // explicação digitada no wmonit
+	Phase    string     `json:"phase,omitempty"`     // fase atual do pipeline (plan/dev/review)
 	LogFile  string     `json:"log_file,omitempty"`
 	ClaudeID string     `json:"claude_session_id,omitempty"` // p/ --resume
 	Status   Status     `json:"status"`

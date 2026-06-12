@@ -7,16 +7,39 @@ import (
 	"testing"
 )
 
-func TestBuildPrompt(t *testing.T) {
-	p := BuildPrompt("ABC-123", "corrigir rota", "http://jira/ABC-123", "descrição aqui", "rode make test")
-	for _, want := range []string{"ABC-123", "corrigir rota", "http://jira/ABC-123", "descrição aqui", "rode make test", "NÃO faça push"} {
-		if !strings.Contains(p, want) {
-			t.Errorf("prompt sem %q:\n%s", want, p)
+func TestPipelinePrompts(t *testing.T) {
+	c := TaskContext{
+		Key:         "ABC-123",
+		Title:       "corrigir rota",
+		URL:         "http://jira/ABC-123",
+		UserNote:    "foque no módulo de rotas",
+		Description: "descrição aqui",
+		Comments:    []string{"Fulano: cuidado com o cache"},
+		MRInfo:      "MR hades!9470: já tem um esqueleto",
+		Template:    "rode make test",
+		HasBranch:   true,
+	}
+	common := []string{"ABC-123", "corrigir rota", "http://jira/ABC-123", "foque no módulo de rotas",
+		"descrição aqui", "cuidado com o cache", "hades!9470", "rode make test"}
+	for name, p := range map[string]string{"plan": PlanPrompt(c), "dev": DevPrompt(c), "review": ReviewPrompt(c)} {
+		for _, want := range append(common, PlanFile) {
+			if !strings.Contains(p, want) {
+				t.Errorf("%s sem %q:\n%s", name, want, p)
+			}
 		}
 	}
-	p = BuildPrompt("X-1", "t", "", "", "")
-	if strings.Contains(p, "Descrição da tarefa") || strings.Contains(p, "específicas") {
-		t.Errorf("prompt com seções vazias:\n%s", p)
+	if p := PlanPrompt(c); !strings.Contains(p, "trabalho em andamento") {
+		t.Errorf("plan sem aviso de branch existente:\n%s", p)
+	}
+	if p := PlanPrompt(TaskContext{Key: "X-1", Title: "t"}); strings.Contains(p, "Descrição da tarefa") ||
+		strings.Contains(p, "específicas") || strings.Contains(p, "trabalho em andamento") {
+		t.Errorf("plan com seções vazias:\n%s", p)
+	}
+	if p := ReviewPrompt(c); !strings.Contains(p, "NÃO modifique código") {
+		t.Errorf("review deveria ser só leitura:\n%s", p)
+	}
+	if p := DevPrompt(c); !strings.Contains(p, "NÃO faça push") {
+		t.Errorf("dev sem guarda de push:\n%s", p)
 	}
 }
 
