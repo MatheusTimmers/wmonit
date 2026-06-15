@@ -122,6 +122,23 @@ func FixPrompt(verdict string) string {
 	return b.String()
 }
 
+// ReviewMRPrompt: sessão de REVIEW — revisar o merge request de outra
+// pessoa (você é o revisor humano e o Claude te ajuda). O worktree já está
+// na branch do MR. Diferente do agente de review do pipeline, aqui não
+// houve plano: o trabalho a revisar é o diff do MR contra a branch base.
+func ReviewMRPrompt(c TaskContext) string {
+	var b strings.Builder
+	b.WriteString("Você está me ajudando a REVISAR um merge request que outra pessoa abriu. NÃO modifique código — apenas analise e me dê um parecer de review.\n\n")
+	b.WriteString(c.header())
+	b.WriteString("O worktree já está na branch deste MR. Sua missão:\n")
+	b.WriteString("- Descubra a branch base (geralmente a default do remoto, ex.: origin/HEAD) e use git (log/diff contra a base) para ver TODAS as mudanças do MR.\n")
+	b.WriteString("- Entenda o objetivo da mudança (use a descrição/comentários acima) e leia o código alterado e o redor que ele afeta.\n")
+	b.WriteString("- Procure bugs, casos de borda, condições de corrida, problemas de segurança, regressões e desvios das convenções do código existente.\n")
+	b.WriteString("- A revisão é por leitura: build e testes ficam comigo, e a falta deles NÃO é motivo para reprovar — avalie o código em si.\n")
+	b.WriteString("- Entregue: (1) um resumo do que o MR faz; (2) os pontos encontrados como comentários de review prontos para eu colar no GitLab, cada um com arquivo:linha e a sugestão; (3) uma recomendação final — APROVAR ou PEDIR AJUSTES — justificada.\n")
+	return b.String()
+}
+
 // ReviewPrompt: agente 3 — revisa o que foi desenvolvido e só reporta.
 func ReviewPrompt(c TaskContext) string {
 	var b strings.Builder

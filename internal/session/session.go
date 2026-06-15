@@ -32,6 +32,14 @@ const (
 	KindMR    = "mr"    // merge request existente
 )
 
+// Modos de trabalho da sessão. Implement roda o pipeline completo
+// (plan → dev → review); Review só revisa um MR de outra pessoa e reporta,
+// sem mexer no código — nem todo trabalho é desenvolvimento.
+const (
+	ModeImplement = "implement" // default; pipeline plan → dev → review
+	ModeReview    = "review"    // só revisa o MR e reporta (1 fase)
+)
+
 // Fases do pipeline de agents de uma sessão.
 const (
 	PhasePlan   = "plan"   // agente 1: compila a tarefa e escreve o plano
@@ -63,6 +71,7 @@ type Session struct {
 	Prompt   string `json:"prompt,omitempty"`
 	UserNote string `json:"user_note,omitempty"` // explicação digitada no wmonit
 	Kind     string `json:"kind,omitempty"`      // origem: issue ou mr
+	Mode     string `json:"mode,omitempty"`      // implement (default) ou review
 	Phase    string `json:"phase,omitempty"`     // fase atual do pipeline (plan/dev/review)
 	// ClaudeIDs guarda o session_id do Claude por fase — retomar a fase
 	// certa exige a conversa certa. ClaudeID mantém o da última fase
@@ -101,6 +110,10 @@ func (s *Session) SetResult(phase, result string) {
 	}
 	s.Results[phase] = result
 }
+
+// IsReview informa se a sessão é só de revisão (revisar o MR de outra
+// pessoa), em vez do pipeline de desenvolvimento.
+func (s Session) IsReview() bool { return s.Mode == ModeReview }
 
 // IsIssue informa se a sessão veio de uma issue do Jira; sessões antigas
 // (sem Kind) caem no formato da chave.

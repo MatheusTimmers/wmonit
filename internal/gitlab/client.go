@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -54,12 +55,35 @@ type user struct {
 	Username string `json:"username"`
 }
 
+// Todo é um item da lista de pendências do GitLab (/todos): algo que pede
+// sua atenção — review pedido, menção/comentário, build quebrado, etc. É a
+// fonte dos alertas proativos.
+type Todo struct {
+	ID         int       `json:"id"`
+	ActionName string    `json:"action_name"` // review_requested, mentioned, build_failed, assigned…
+	TargetType string    `json:"target_type"` // MergeRequest, Issue, Commit…
+	TargetURL  string    `json:"target_url"`
+	Body       string    `json:"body"`
+	State      string    `json:"state"`
+	CreatedAt  time.Time `json:"created_at"`
+	Author     struct {
+		Name string `json:"name"`
+	} `json:"author"`
+	Target struct {
+		Title      string `json:"title"`
+		References struct {
+			Full string `json:"full"`
+		} `json:"references"`
+	} `json:"target"`
+}
+
 type Summary struct {
 	Username      string
 	OpenMRs       []MR
 	Merged        []MR // mergeados desde o início do mês anterior
 	Closed        []MR // fechados sem merge desde o início do mês anterior
 	ReviewPending []MR
+	Todos         []Todo // pendências do GitLab (alertas proativos)
 }
 
 // Mine junta os MRs do usuário (abertos, mergeados e fechados) sem
@@ -192,6 +216,18 @@ func (c *Client) MRNotes(projectID, iid int) ([]Note, error) {
 	return notes, nil
 }
 
+// Todos devolve as pendências abertas do usuário (/todos?state=pending) —
+// review pedido, menções, builds quebrados, etc. A lista alimenta os
+// alertas proativos do wmonit.
+func (c *Client) Todos() ([]Todo, error) {
+	q := url.Values{"state": {"pending"}, "per_page": {"50"}}
+	var todos []Todo
+	if err := c.get("/todos", q, &todos); err != nil {
+		return nil, err
+	}
+	return todos, nil
+}
+
 func (c *Client) Fetch() (*Summary, error) {
 	if c.base == "" || c.token == "" {
 		return nil, fmt.Errorf("GitLab não configurado — defina url e token em %s", "~/.config/wmonit/config.toml")
@@ -232,6 +268,14 @@ func (c *Client) Fetch() (*Summary, error) {
 	}); err != nil {
 		return nil, err
 	}
+	// Fila de review ordenada do mais parado para o menos (menos atividade
+	// recente primeiro) — o que está esperando review há mais tempo no topo.
+	sort.SliceStable(s.ReviewPending, func(i, j int) bool {
+		return s.ReviewPending[i].UpdatedAt.Before(s.ReviewPending[j].UpdatedAt)
+	})
+
+	// Pendências do GitLab para os alertas; falha aqui não derruba o resto.
+	s.Todos, _ = c.Todos()
 
 	return s, nil
 }

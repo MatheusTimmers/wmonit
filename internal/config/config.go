@@ -18,41 +18,23 @@ type Jira struct {
 	Auth  string `toml:"auth"` // "bearer" (Server/DC com PAT) ou "basic" (Cloud com email+token)
 	Email string `toml:"email"`
 	Token string `toml:"token"`
-	// Ordem de exibição dos grupos de status na aba Jira; status fora
-	// da lista aparecem depois, na ordem em que a API devolver.
 	StatusOrder []string `toml:"status_order"`
-	// Id do campo de complexidade da issue (ex.: "customfield_10106").
-	// Vazio = detectar automaticamente pelo nome do campo.
 	ComplexityField string `toml:"complexity_field"`
 }
 
-// Goals define metas semanais opcionais; 0 desativa a barra de progresso.
+// TODO: mudar para tasks finalizadas e mr abertos
 type Goals struct {
 	WeeklyMRs    int `toml:"weekly_mrs"`
 	WeeklyIssues int `toml:"weekly_issues"`
 }
 
-// Claude configura as sessões de trabalho com o Claude Code.
 type Claude struct {
-	// Pasta com os serviços (cada subpasta é um repositório git).
 	SourcesDir string `toml:"sources_dir"`
-	// Onde criar os worktrees; vazio = <sources_dir>/.worktrees.
 	WorktreesDir string `toml:"worktrees_dir"`
-	// Binário do Claude Code; vazio = "claude" no PATH.
 	Bin string `toml:"bin"`
-	// Prefixo da branch criada para sessões de issue (ex.: "feature/").
-	// Vazio = sem prefixo: a branch é a própria chave (ABC-123).
 	BranchPrefix string `toml:"branch_prefix"`
-	// Instruções extras por serviço, anexadas ao prompt da sessão.
-	Templates map[string]string `toml:"templates"`
-	// Modelo por fase do pipeline (plan/dev/review), passado via --model.
-	// Aceita alias ("opus", "sonnet", "haiku") ou id completo; vazio usa
-	// o default do Claude Code.
+	Templates map[string]string `toml:"templates"` // TODO: Seria legal adicionar de forma geral tbm
 	Models map[string]string `toml:"models"`
-	// Modo de permissão das execuções headless (--permission-mode). Sem
-	// ninguém para aprovar ferramenta, o default é "bypassPermissions" —
-	// o worktree é isolado, mas o agente ganha bash livre; valores mais
-	// restritos ("acceptEdits", "default") podem travar build/commit.
 	PermissionMode string `toml:"permission_mode"`
 }
 
@@ -71,8 +53,6 @@ func Path() string {
 	return filepath.Join(home, ".config", "wmonit", "config.toml")
 }
 
-// Load lê o config.toml (se existir) e aplica overrides das variáveis
-// de ambiente WMONIT_*, que têm precedência sobre o arquivo.
 func Load() (Config, error) {
 	var cfg Config
 	if _, err := toml.DecodeFile(Path(), &cfg); err != nil && !os.IsNotExist(err) {
@@ -108,10 +88,6 @@ func Load() (Config, error) {
 	if cfg.Claude.PermissionMode == "" {
 		cfg.Claude.PermissionMode = "bypassPermissions"
 	}
-	// Defaults do pipeline: opus para planejar e revisar (raciocínio e
-	// precisão), sonnet para desenvolver (velocidade/custo com plano pronto).
-	// Só preenche chave AUSENTE — valor vazio explícito significa "use o
-	// default do próprio Claude Code" (sem --model).
 	if cfg.Claude.Models == nil {
 		cfg.Claude.Models = map[string]string{}
 	}

@@ -12,6 +12,7 @@ url = "https://jira.nelogica.com.br" # ajuste para a URL real do Jira
 auth = "bearer"                      # "bearer" para Jira Server/DC (PAT) · "basic" para Jira Cloud
 email = ""                           # só necessário com auth = "basic"
 token = ""                           # PAT (Server/DC) ou API token (Cloud)
+
 # Ordem em que os grupos de status aparecem na aba Jira (use os nomes
 # exatos dos status do seu projeto; comparação ignora maiúsculas).
 status_order = [
@@ -20,6 +21,7 @@ status_order = [
   "Revisão 1",
   "Em Deploy",
 ]
+
 # Id do campo de complexidade da issue, usado na aba Desempenho
 # (ex.: "customfield_10106"). Vazio = detecção automática pelo nome
 # (procura um campo cujo nome contenha "complex").

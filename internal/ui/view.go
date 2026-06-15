@@ -249,7 +249,7 @@ func (m Model) footer(vp interface{ ScrollPercent() float64 }) string {
 	}
 	help := "tab/1-6 abas · g relatório do dia · j/k rolar · r atualizar · q sair"
 	if m.describing {
-		help = "ctrl+d inicia o pipeline · esc cancela"
+		help = "ctrl+d inicia · ctrl+r alterna dev/revisão · esc cancela"
 	} else if m.pickingService {
 		help = "j/k escolher serviço · enter confirmar · esc cancelar"
 	} else if m.detail {
@@ -363,10 +363,15 @@ func (m Model) viewHoje() string {
 			if k := mr.JiraKey(); k != "" {
 				line += dim.Render(" #" + k)
 			}
+			if age := humanAge(mr.UpdatedAt); age != "" {
+				line += dim.Render(" · há " + age)
+			}
 			b.WriteString(line + "\n")
 		}
 	}
 	b.WriteString("\n")
+
+	b.WriteString(m.viewNovidades())
 
 	switch {
 	case m.jiErr != nil:
@@ -756,6 +761,35 @@ func renderMR(mr gitlab.MR) string {
 	}
 	if t := mr.Kind(); t != "" {
 		s += dim.Render(" [" + t + "]")
+	}
+	return s
+}
+
+// humanAge formata o tempo desde t de forma curta (agora, 12min, 5h, 3d) —
+// usado para mostrar há quanto um MR espera review.
+func humanAge(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "agora"
+	case d < time.Hour:
+		return fmt.Sprintf("%dmin", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
+}
+
+// renderReviewMR é a linha de um MR na fila de review: a do MR mais o tempo
+// sem atividade, que aproxima a espera.
+func renderReviewMR(mr gitlab.MR) string {
+	s := renderMR(mr)
+	if age := humanAge(mr.UpdatedAt); age != "" {
+		s += dim.Render(" · parado há " + age)
 	}
 	return s
 }

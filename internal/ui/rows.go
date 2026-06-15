@@ -143,7 +143,16 @@ func (m Model) gitlabRows() []row {
 	}
 	addMRs("📬 MRs abertos", m.gl.OpenMRs)
 	hdr("")
-	addMRs("⏳ Aguardando seu review", m.gl.ReviewPending)
+
+	// Fila de review: MRs aguardando você, do mais parado para o menos,
+	// cada um com o tempo de espera; continuam selecionáveis para 'c'.
+	hdr(section.Render(fmt.Sprintf("⏳ Aguardando seu review (%d)", len(m.gl.ReviewPending))))
+	if len(m.gl.ReviewPending) == 0 {
+		hdr(dim.Render("  nenhum"))
+	}
+	for i := range m.gl.ReviewPending {
+		rows = append(rows, row{text: renderReviewMR(m.gl.ReviewPending[i]), item: &focusItem{mr: &m.gl.ReviewPending[i]}})
+	}
 	hdr("")
 	addMRs("✅ Mergeados nesta semana", merged)
 	return rows
