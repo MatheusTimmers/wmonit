@@ -12,6 +12,7 @@ import (
 
 	"github.com/timmers/wmonit/internal/claude"
 	"github.com/timmers/wmonit/internal/config"
+	"github.com/timmers/wmonit/internal/demo"
 	"github.com/timmers/wmonit/internal/gitlab"
 	"github.com/timmers/wmonit/internal/history"
 	"github.com/timmers/wmonit/internal/jira"
@@ -29,6 +30,23 @@ const (
 	tabTarefas
 	tabSessoes
 	numTabs
+)
+
+// mode é o overlay de entrada ativo. Substitui um punhado de bools que
+// precisavam ser mutuamente exclusivos sem nada garantir isso: agora o
+// estado é impossível de ficar inconsistente e o dispatch é um só switch.
+// modeAdding e modeFiltering são overlays "inline" (a aba continua desenhada
+// por baixo, com o input embutido); os demais substituem o conteúdo.
+type mode int
+
+const (
+	modeNormal mode = iota
+	modeAdding
+	modeDescribing
+	modePickingService
+	modeFiltering
+	modeDetail
+	modeReport
 )
 
 const refreshEvery = 5 * time.Minute
@@ -62,19 +80,25 @@ type Model struct {
 	store *tasks.Store
 	hist  *history.Store
 	sess  *session.Store
+	demo  bool // dados inventados, sem rede (flag --demo)
+
+	// Clients reaproveitados entre refreshes — sem isso o cache de
+	// metadados do Jira (campos, prioridades) não sobreviveria a cada busca.
+	glClient *gitlab.Client
+	jiClient *jira.Client
+
+	mode mode // overlay de entrada ativo (normal, adding, describing…)
 
 	// Estado das sessões de trabalho
-	describing     bool
-	descInput      textarea.Model
-	pickingService bool
-	pickOptions    []string
-	pickCursor     int
-	pending        *pendingSession
-	sessInfo       string // última mensagem de status das sessões
-	progress       map[string]claude.Progress
-	handles        map[string]*claude.Handle      // execuções vivas, p/ cancelar
-	taskCtx        map[string]*claude.TaskContext // contexto por sessão (1 busca por pipeline)
-	ticking        bool                           // cadeia de polling das sessões viva
+	descInput   textarea.Model
+	pickOptions []string
+	pickCursor  int
+	pending     *pendingSession
+	sessInfo    string // última mensagem de status das sessões
+	progress    map[string]claude.Progress
+	handles     map[string]*claude.Handle      // execuções vivas, p/ cancelar
+	taskCtx     map[string]*claude.TaskContext // contexto por sessão (1 busca por pipeline)
+	ticking     bool                           // cadeia de polling das sessões viva
 
 	tab     tab
 	gl      *gitlab.Summary
@@ -87,15 +111,12 @@ type Model struct {
 	fetchGen int // rodada atual de fetch; respostas de rodadas velhas são descartadas
 
 	cursor int
-	adding bool
-	report bool
+	addErr string // erro da última tentativa de adicionar tarefa (vencimento inválido)
 	input  textinput.Model
 
-	filtering   bool
 	filter      string
 	filterInput textinput.Model
 
-	detail        bool
 	detailLoading bool
 	detailTitle   string
 	detailURL     string
@@ -107,8 +128,6 @@ type Model struct {
 
 	notified map[string]bool
 
-	// Alertas proativos: o que já foi notificado por fonte e a linha de base
-	// (não notificar na primeira leitura nem após reiniciar).
 	seenTodos   map[int]bool
 	issueStatus map[string]string
 	glBaseline  bool
@@ -117,9 +136,9 @@ type Model struct {
 	width, height int
 }
 
-func New(cfg config.Config, store *tasks.Store) Model {
+func New(cfg config.Config, store *tasks.Store, demo bool) Model {
 	ti := textinput.New()
-	ti.Placeholder = "descrição (opcional no final: @today, @tomorrow, @2026-06-15; hora: @today 15:00)"
+	ti.Placeholder = "descrição · data @today/@tomorrow/@2026-06-15 · hora @today 15:00 · prioridade !alta/!critica/!media/!baixa"
 	fi := textinput.New()
 	fi.Placeholder = "filtrar por chave, título ou status"
 	sp := spinner.New(spinner.WithSpinner(spinner.Dot))
@@ -128,7 +147,9 @@ func New(cfg config.Config, store *tasks.Store) Model {
 	ta.SetHeight(8)
 	hist, _ := history.Load() // sem histórico ainda não é erro fatal
 	sess, _ := session.Load() // mesmo com erro o store volta utilizável
-	return Model{cfg: cfg, store: store, hist: hist, sess: sess, input: ti, filterInput: fi, descInput: ta, spin: sp, vp: viewport.New(80, 20), loading: 2, notified: map[string]bool{}, seenTodos: map[int]bool{}, issueStatus: map[string]string{}, progress: map[string]claude.Progress{}, handles: map[string]*claude.Handle{}, taskCtx: map[string]*claude.TaskContext{}}
+	glClient := gitlab.New(cfg.GitLab.URL, cfg.GitLab.Token)
+	jiClient := jira.New(cfg.Jira.URL, cfg.Jira.Auth, cfg.Jira.Email, cfg.Jira.Token, cfg.Jira.ComplexityField)
+	return Model{cfg: cfg, store: store, hist: hist, sess: sess, demo: demo, glClient: glClient, jiClient: jiClient, input: ti, filterInput: fi, descInput: ta, spin: sp, vp: viewport.New(80, 20), loading: 2, notified: map[string]bool{}, seenTodos: map[int]bool{}, issueStatus: map[string]string{}, progress: map[string]claude.Progress{}, handles: map[string]*claude.Handle{}, taskCtx: map[string]*claude.TaskContext{}}
 }
 
 func (m Model) Init() tea.Cmd {
@@ -143,7 +164,9 @@ func reminderTick() tea.Cmd {
 	return tea.Tick(reminderEvery, func(t time.Time) tea.Msg { return reminderMsg(t) })
 }
 
-func (m Model) checkReminders() tea.Cmd {
+// checkReminders usa receiver por ponteiro porque grava em m.notified; por
+// valor só funcionava por o map ser referência — frágil para o próximo campo.
+func (m *Model) checkReminders() tea.Cmd {
 	now := time.Now()
 	today := now.Format("2006-01-02")
 	var cmds []tea.Cmd
@@ -152,8 +175,17 @@ func (m Model) checkReminders() tea.Cmd {
 			continue
 		}
 
-		due, err := time.ParseInLocation("2006-01-02 15:04", t.Due + " " + t.DueTime, time.Local)
+		due, err := time.ParseInLocation("2006-01-02 15:04", t.Due+" "+t.DueTime, time.Local)
 		if err != nil || now.Before(due) {
+			continue
+		}
+
+		if t.Urgent() {
+			title := "wmonit — ⬆ tarefa de prioridade ALTA"
+			if t.Priority == tasks.PriorityCritical {
+				title = "wmonit — 🔴 tarefa CRÍTICA"
+			}
+			cmds = append(cmds, notifyCmd(title, t.Text+" ("+t.DueTime+")"))
 			continue
 		}
 
@@ -171,9 +203,6 @@ func (m Model) checkReminders() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-// recordToday salva no histórico o que já foi entregue hoje. Roda a cada
-// atualização; como Upsert substitui o registro do dia, os números só
-// crescem ao longo do dia.
 func (m *Model) recordToday() {
 	if m.hist == nil || m.gl == nil || m.ji == nil {
 		return
@@ -198,20 +227,26 @@ func (m *Model) recordToday() {
 }
 
 func (m Model) fetchAll() tea.Cmd {
-	cfg, gen := m.cfg, m.fetchGen
+	gen := m.fetchGen
+	if m.demo {
+		return tea.Batch(
+			func() tea.Msg { return glMsg{gen, demo.GitLab(), nil} },
+			func() tea.Msg { return jiMsg{gen, demo.Jira(), nil} },
+		)
+	}
+	gl, ji := m.glClient, m.jiClient
 	return tea.Batch(
 		func() tea.Msg {
-			s, err := gitlab.New(cfg.GitLab.URL, cfg.GitLab.Token).Fetch()
+			s, err := gl.Fetch()
 			return glMsg{gen, s, err}
 		},
 		func() tea.Msg {
-			s, err := jira.New(cfg.Jira.URL, cfg.Jira.Auth, cfg.Jira.Email, cfg.Jira.Token, cfg.Jira.ComplexityField).Fetch()
+			s, err := ji.Fetch()
 			return jiMsg{gen, s, err}
 		},
 	)
 }
 
-// refresh inicia uma nova rodada de fetch, invalidando a que estiver em voo.
 func (m *Model) refresh() tea.Cmd {
 	m.fetchGen++
 	m.loading = 2
@@ -382,25 +417,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
-		if m.adding {
+		switch m.mode {
+		case modeAdding:
 			return m.updateAdding(msg)
-		}
-		if m.describing {
+		case modeDescribing:
 			return m.updateDescribe(msg)
-		}
-		if m.pickingService {
+		case modePickingService:
 			return m.updatePickService(msg)
-		}
-		if m.filtering {
+		case modeFiltering:
 			return m.updateFilter(msg)
-		}
-		if m.detail {
+		case modeDetail:
 			return m.updateDetail(msg)
-		}
-		if m.report {
+		case modeReport:
 			return m.updateReport(msg)
+		default:
+			return m.updateKeys(msg)
 		}
-		return m.updateKeys(msg)
 	}
 	return m, nil
 }
@@ -409,32 +441,38 @@ func (m Model) updateAdding(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter":
 		if v := strings.TrimSpace(m.input.Value()); v != "" {
-			m.store.Add(v)
+			if err := m.store.Add(v); err != nil {
+				// Vencimento inválido: mantém o textbox aberto com o aviso.
+				m.addErr = err.Error()
+				return m, nil
+			}
 			m.store.Save()
 		}
-		m.adding = false
+		m.mode = modeNormal
+		m.addErr = ""
 		m.input.Reset()
 		return m, nil
 	case "esc":
-		m.adding = false
+		m.mode = modeNormal
+		m.addErr = ""
 		m.input.Reset()
 		return m, nil
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	m.addErr = "" // ao continuar digitando, some o aviso anterior
 	return m, cmd
 }
 
-// updateFilter trata a digitação da busca; o filtro é aplicado ao vivo.
 func (m Model) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter":
-		m.filtering = false
+		m.mode = modeNormal
 		m.filter = strings.TrimSpace(m.filterInput.Value())
 		m.cursor = 0
 		return m, nil
 	case "esc":
-		m.filtering = false
+		m.mode = modeNormal
 		m.filter = ""
 		m.filterInput.Reset()
 		m.cursor = 0
@@ -450,7 +488,7 @@ func (m Model) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) updateReport(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "q", "g":
-		m.report = false
+		m.mode = modeNormal
 		m.vp.GotoTop()
 		return m, nil
 	case "ctrl+c":
@@ -470,7 +508,7 @@ func (m Model) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "q", "ctrl+c":
 		return m, tea.Quit
 	case "g":
-		m.report = true
+		m.mode = modeReport
 		m.vp.GotoTop()
 		return m, nil
 	case "1", "2", "3", "4", "5", "6":
@@ -493,7 +531,7 @@ func (m Model) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.tab == tabTarefas {
 		switch msg.String() {
 		case "a":
-			m.adding = true
+			m.mode = modeAdding
 			m.input.Focus()
 			return m, textinput.Blink
 		case "j", "down":
@@ -548,7 +586,7 @@ func (m Model) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "/":
-			m.filtering = true
+			m.mode = modeFiltering
 			m.filter = ""
 			m.filterInput.SetValue("")
 			m.cursor = 0

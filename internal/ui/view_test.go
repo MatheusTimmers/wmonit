@@ -2,10 +2,12 @@ package ui
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/timmers/wmonit/internal/jira"
+	"github.com/timmers/wmonit/internal/tasks"
 )
 
 func TestStartOfWeek(t *testing.T) {
@@ -57,6 +59,32 @@ func TestSidelineKind(t *testing.T) {
 		if got := sidelineKind(status); got != want {
 			t.Errorf("sidelineKind(%q) = %q, esperado %q", status, got, want)
 		}
+	}
+}
+
+func TestTaskPrioBadge(t *testing.T) {
+	if got := taskPrioBadge(tasks.PriorityCritical); !strings.Contains(got, "CRÍTICA") {
+		t.Errorf("badge crítica = %q", got)
+	}
+	if got := taskPrioBadge(tasks.PriorityHigh); !strings.Contains(got, "alta") {
+		t.Errorf("badge alta = %q", got)
+	}
+	if got := taskPrioBadge(tasks.PriorityMedium); got != "" {
+		t.Errorf("média não deveria ter selo, veio %q", got)
+	}
+}
+
+func TestViewTarefasShowsPriority(t *testing.T) {
+	store := &tasks.Store{Tasks: []tasks.Task{
+		{Text: "deploy", Priority: tasks.PriorityCritical, Due: time.Now().Format("2006-01-02"), DueTime: "15:00"},
+	}}
+	m := Model{tab: tabTarefas, store: store}
+	out := m.viewTarefas()
+	if !strings.Contains(out, "CRÍTICA") {
+		t.Errorf("viewTarefas sem o selo de prioridade crítica:\n%s", out)
+	}
+	if !strings.Contains(out, "15:00") {
+		t.Errorf("viewTarefas sem o horário:\n%s", out)
 	}
 }
 

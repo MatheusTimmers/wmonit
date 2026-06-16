@@ -11,6 +11,7 @@ import (
 
 	"github.com/timmers/wmonit/internal/gitlab"
 	"github.com/timmers/wmonit/internal/jira"
+	"github.com/timmers/wmonit/internal/tasks"
 )
 
 var (
@@ -28,7 +29,22 @@ var (
 	barStyle2   = lipgloss.NewStyle().Foreground(lipgloss.Color("141"))
 	barStyle3   = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 	alertStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("0")).Background(lipgloss.Color("214"))
+	critStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("196"))
 )
+
+// taskPrioBadge destaca a prioridade da tarefa; média/sem prioridade não
+// ganham selo (para não poluir a lista).
+func taskPrioBadge(p string) string {
+	switch p {
+	case tasks.PriorityCritical:
+		return " " + critStyle.Render("🔴 CRÍTICA")
+	case tasks.PriorityHigh:
+		return " " + warnStyle.Render("⬆ alta")
+	case tasks.PriorityLow:
+		return " " + dim.Render("⬇ baixa")
+	}
+	return ""
+}
 
 var tabNames = []string{"Hoje", "Desempenho", "GitLab", "Jira", "Tarefas", "Sessões"}
 
@@ -144,9 +160,9 @@ func (m Model) View() string {
 	var b strings.Builder
 
 	var topRow string
-	if m.detail {
+	if m.mode == modeDetail {
 		topRow = tabActive.Render("🔍 "+m.detailTitle) + tabInactive.Render("esc volta · o abre no navegador")
-	} else if m.report {
+	} else if m.mode == modeReport {
 		topRow = tabActive.Render("📋 Relatório do dia") + tabInactive.Render(m.reportSummary())
 	} else {
 		var tabsRow []string
@@ -177,19 +193,17 @@ func (m Model) View() string {
 // content gera o texto da aba ativa; é usado tanto para desenhar quanto
 // para alimentar o viewport do modelo (sem isso a rolagem não tem altura).
 func (m Model) content() string {
-	if m.describing {
+	switch m.mode {
+	case modeDescribing:
 		return m.viewDescribe()
-	}
-	if m.pickingService {
+	case modePickingService:
 		return m.viewPickService()
-	}
-	if m.detail {
+	case modeDetail:
 		if m.detailLoading {
 			return dim.Render("carregando…")
 		}
 		return m.detailBody
-	}
-	if m.report {
+	case modeReport:
 		return m.viewReport()
 	}
 	switch m.tab {
@@ -244,24 +258,24 @@ func (m Model) alerts() string {
 }
 
 func (m Model) footer(vp interface{ ScrollPercent() float64 }) string {
-	if m.filtering {
+	if m.mode == modeFiltering {
 		return dim.Render(" buscar: ") + m.filterInput.View() + dim.Render("  (enter aplica · esc limpa)")
 	}
 	help := "tab/1-6 abas · g relatório do dia · j/k rolar · r atualizar · q sair"
-	if m.describing {
+	if m.mode == modeDescribing {
 		help = "ctrl+d inicia · ctrl+r alterna dev/revisão · esc cancela"
-	} else if m.pickingService {
+	} else if m.mode == modePickingService {
 		help = "j/k escolher serviço · enter confirmar · esc cancelar"
-	} else if m.detail {
+	} else if m.mode == modeDetail {
 		help = "esc/q voltar · o abrir no navegador · j/k rolar"
-	} else if m.report {
+	} else if m.mode == modeReport {
 		help = "esc/q voltar · j/k rolar · r atualizar"
 	} else if m.tab == tabGitLab || m.tab == tabJira {
 		help = "j/k selecionar · enter detalhes · o navegador · c sessão · / buscar · r atualizar · q sair"
 	} else if m.tab == tabSessoes {
 		help = "s iniciar/aprovar/corrigir · enter resultado · t interativo · v diff · e editor · f concluir · x cancelar · d/D remover"
 	} else if m.tab == tabTarefas {
-		if m.adding {
+		if m.mode == modeAdding {
 			help = "enter salvar · esc cancelar"
 		} else {
 			help = "a adicionar · espaço concluir · d apagar · j/k navegar · tab/1-6 abas · q sair"
@@ -275,6 +289,9 @@ func (m Model) footer(vp interface{ ScrollPercent() float64 }) string {
 	}
 	if p := vp.ScrollPercent(); p < 1 {
 		status += dim.Render(fmt.Sprintf(" · %d%%", int(p*100)))
+	}
+	if m.demo {
+		return alertStyle.Render(" 🧪 DEMO ") + dim.Render(" "+help+"   "+status)
 	}
 	return dim.Render(" " + help + "   " + status)
 }
@@ -822,7 +839,7 @@ func (m Model) viewTarefas() string {
 	var b strings.Builder
 	today := time.Now().Format("2006-01-02")
 
-	if len(m.store.Tasks) == 0 && !m.adding {
+	if len(m.store.Tasks) == 0 && m.mode != modeAdding {
 		b.WriteString(dim.Render("nenhuma tarefa — pressione 'a' para adicionar") + "\n")
 	}
 	for i, t := range m.store.Tasks {
@@ -838,21 +855,36 @@ func (m Model) viewTarefas() string {
 		}
 		due := ""
 		if t.Due != "" {
+			label := t.Due
+			if t.DueTime != "" {
+				label += " " + t.DueTime
+			}
 			switch {
 			case t.Done:
-				due = dim.Render(" (" + t.Due + ")")
+				due = dim.Render(" (" + label + ")")
 			case t.Due < today:
-				due = errStyle.Render(" (atrasada: " + t.Due + ")")
+				due = errStyle.Render(" (atrasada: " + label + ")")
 			case t.Due == today:
-				due = warnStyle.Render(" (hoje)")
+				hoje := "hoje"
+				if t.DueTime != "" {
+					hoje += " " + t.DueTime
+				}
+				due = warnStyle.Render(" (" + hoje + ")")
 			default:
-				due = dim.Render(" (" + t.Due + ")")
+				due = dim.Render(" (" + label + ")")
 			}
 		}
-		b.WriteString(cursor + check + " " + text + due + "\n")
+		badge := ""
+		if !t.Done {
+			badge = taskPrioBadge(t.Priority)
+		}
+		b.WriteString(cursor + check + " " + text + badge + due + "\n")
 	}
-	if m.adding {
+	if m.mode == modeAdding {
 		b.WriteString("\n" + section.Render("Nova tarefa:") + "\n" + m.input.View() + "\n")
+		if m.addErr != "" {
+			b.WriteString(errStyle.Render("⚠ "+m.addErr) + "\n")
+		}
 	}
 	return b.String()
 }

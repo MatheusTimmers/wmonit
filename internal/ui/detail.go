@@ -6,14 +6,11 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-
-	"github.com/timmers/wmonit/internal/gitlab"
-	"github.com/timmers/wmonit/internal/jira"
 )
 
 // openDetail entra no modo detalhe e dispara o carregamento do item.
 func (m Model) openDetail(it *focusItem) (tea.Model, tea.Cmd) {
-	m.detail = true
+	m.mode = modeDetail
 	m.detailLoading = true
 	m.detailBody = ""
 	m.detailURL = m.itemURL(it)
@@ -30,7 +27,7 @@ func (m Model) openDetail(it *focusItem) (tea.Model, tea.Cmd) {
 func (m Model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "q", "enter":
-		m.detail = false
+		m.mode = modeNormal
 		m.vp.GotoTop()
 		return m, nil
 	case "ctrl+c":
@@ -76,9 +73,10 @@ func (m Model) linkedMRsText(key string) string {
 	return section.Render("🔗 MRs ligados") + "\n  " + strings.Join(parts, ", ")
 }
 
-// fetchDetail devolve um comando que busca descrição e comentários do item.
+// fetchDetail devolve um comando que busca descrição e comentários do item,
+// reusando os clients do Model (sem recriá-los a cada abertura).
 func (m Model) fetchDetail(it *focusItem) tea.Cmd {
-	cfg := m.cfg
+	gl, ji := m.glClient, m.jiClient
 	if it.mr != nil {
 		mr := *it.mr
 		wrap := m.wrapText
@@ -94,7 +92,7 @@ func (m Model) fetchDetail(it *focusItem) tea.Cmd {
 			} else {
 				b.WriteString(dim.Render("(sem descrição)") + "\n\n")
 			}
-			notes, err := gitlab.New(cfg.GitLab.URL, cfg.GitLab.Token).MRNotes(mr.ProjectID, mr.IID)
+			notes, err := gl.MRNotes(mr.ProjectID, mr.IID)
 			if err != nil {
 				return detailMsg{err: err}
 			}
@@ -119,7 +117,7 @@ func (m Model) fetchDetail(it *focusItem) tea.Cmd {
 	linked := m.linkedMRsText(is.Key)
 	wrap := m.wrapText
 	return func() tea.Msg {
-		d, err := jira.New(cfg.Jira.URL, cfg.Jira.Auth, cfg.Jira.Email, cfg.Jira.Token, cfg.Jira.ComplexityField).IssueDetail(is.Key)
+		d, err := ji.IssueDetail(is.Key)
 		if err != nil {
 			return detailMsg{err: err}
 		}
