@@ -48,7 +48,7 @@ func TestRunCapturesOutput(t *testing.T) {
 	dir := t.TempDir()
 	log := filepath.Join(dir, "logs", "x.jsonl")
 	// Usa um binário simples no lugar do claude para validar dir/argumentos/log.
-	if err := Run("pwd", dir, "ignored", log, "", "", nil); err == nil {
+	if err := Run(Opts{Bin: "pwd", Dir: dir, Prompt: "ignored", LogFile: log}, nil); err == nil {
 		// pwd ignora os argumentos e imprime o diretório — Run deve gravar isso.
 		data, err := os.ReadFile(log)
 		if err != nil {

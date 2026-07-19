@@ -34,12 +34,17 @@ const (
 const refreshEvery = 5 * time.Minute
 const reminderEvery = 30 * time.Second
 
+// gen marca de qual rodada de fetch a resposta veio: um refresh manual no
+// meio de outro em voo invalida as respostas antigas (senão o contador de
+// loading fica negativo e dados velhos sobrescrevem os novos).
 type glMsg struct {
+	gen int
 	sum *gitlab.Summary
 	err error
 }
 
 type jiMsg struct {
+	gen int
 	sum *jira.Summary
 	err error
 }
@@ -79,6 +84,8 @@ type Model struct {
 	ji      *jira.Summary
 	jiErr   error
 	loading int
+
+	fetchGen int // rodada atual de fetch; respostas de rodadas velhas são descartadas
 
 	cursor int
 	adding bool
@@ -184,17 +191,24 @@ func (m *Model) recordToday() {
 }
 
 func (m Model) fetchAll() tea.Cmd {
-	cfg := m.cfg
+	cfg, gen := m.cfg, m.fetchGen
 	return tea.Batch(
 		func() tea.Msg {
 			s, err := gitlab.New(cfg.GitLab.URL, cfg.GitLab.Token).Fetch()
-			return glMsg{s, err}
+			return glMsg{gen, s, err}
 		},
 		func() tea.Msg {
 			s, err := jira.New(cfg.Jira.URL, cfg.Jira.Auth, cfg.Jira.Email, cfg.Jira.Token, cfg.Jira.ComplexityField).Fetch()
-			return jiMsg{s, err}
+			return jiMsg{gen, s, err}
 		},
 	)
+}
+
+// refresh inicia uma nova rodada de fetch, invalidando a que estiver em voo.
+func (m *Model) refresh() tea.Cmd {
+	m.fetchGen++
+	m.loading = 2
+	return m.fetchAll()
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -213,8 +227,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case tickMsg:
-		m.loading = 2
-		return m, tea.Batch(m.fetchAll(), tick())
+		return m, tea.Batch(m.refresh(), tick())
 
 	case reminderMsg:
 		return m, tea.Batch(m.checkReminders(), reminderTick())
@@ -230,6 +243,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case glMsg:
+		if msg.gen != m.fetchGen {
+			return m, nil // resposta de uma rodada já substituída
+		}
 		m.loading--
 		m.gl, m.glErr = msg.sum, msg.err
 		m.mine = nil
@@ -241,6 +257,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case jiMsg:
+		if msg.gen != m.fetchGen {
+			return m, nil
+		}
 		m.loading--
 		m.ji, m.jiErr = msg.sum, msg.err
 		m.updated = time.Now()
@@ -427,8 +446,7 @@ func (m Model) updateReport(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+c":
 		return m, tea.Quit
 	case "r":
-		m.loading = 2
-		return m, m.fetchAll()
+		return m, m.refresh()
 	}
 	// As demais teclas rolam o relatório no viewport.
 	m.vp.SetContent(m.content())
@@ -459,8 +477,7 @@ func (m Model) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.vp.GotoTop()
 		return m, nil
 	case "r":
-		m.loading = 2
-		return m, m.fetchAll()
+		return m, m.refresh()
 	}
 
 	if m.tab == tabTarefas {
@@ -552,6 +569,18 @@ func (m Model) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // visível no viewport.
 func (m *Model) scrollToItem() {
 	content, sel := renderRows(m.currentRows(), m.cursor)
+	m.vp.SetContent(content)
+	if sel < m.vp.YOffset {
+		m.vp.SetYOffset(sel)
+	} else if sel >= m.vp.YOffset+m.vp.Height {
+		m.vp.SetYOffset(sel - m.vp.Height + 1)
+	}
+}
+
+// scrollToSession garante que a sessão selecionada fique visível —
+// sessões ocupam mais de uma linha, então usa a linha real do item.
+func (m *Model) scrollToSession() {
+	content, sel := m.viewSessoes()
 	m.vp.SetContent(content)
 	if sel < m.vp.YOffset {
 		m.vp.SetYOffset(sel)

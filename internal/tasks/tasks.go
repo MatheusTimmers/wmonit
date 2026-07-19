@@ -84,16 +84,18 @@ func (s *Store) DeleteAt(i int) {
 	}
 }
 
+// parseDue separa o sufixo de vencimento do texto. O sufixo só vale se a
+// tarefa terminar com ele: "@today", "@tomorrow" ou "@YYYY-MM-DD",
+// opcionalmente seguidos de um horário "HH:MM". Qualquer outra coisa
+// depois do "@" mantém o texto intacto — nada é descartado em silêncio.
 func parseDue(input string) (text, due, dueTime string) {
 	text = strings.TrimSpace(input)
 	idx := strings.LastIndex(text, "@")
 	if idx < 0 {
 		return text, "", ""
 	}
-	// O sufixo é uma data/palavra-chave, opcionalmente seguida de um
-	// horário: "@today", "@tomorrow 15:00", "@2026-06-15 09:30".
 	fields := strings.Fields(text[idx+1:])
-	if len(fields) == 0 {
+	if len(fields) == 0 || len(fields) > 2 {
 		return text, "", ""
 	}
 	today := time.Now()
@@ -110,11 +112,16 @@ func parseDue(input string) (text, due, dueTime string) {
 	if due == "" {
 		return text, "", "" // não era uma tag de data válida
 	}
-	if len(fields) >= 2 {
-		if t, err := time.Parse("15:04", fields[1]); err == nil {
-			dueTime = t.Format("15:04")
+	if len(fields) == 2 {
+		t, err := time.Parse("15:04", fields[1])
+		if err != nil {
+			return text, "", "" // "@today qualquer-coisa" não é uma tag
 		}
+		dueTime = t.Format("15:04")
 	}
-	text = strings.TrimSpace(text[:idx])
-	return text, due, dueTime
+	rest := strings.TrimSpace(text[:idx])
+	if rest == "" {
+		return text, "", "" // só a tag, sem descrição — não vira vencimento
+	}
+	return rest, due, dueTime
 }
