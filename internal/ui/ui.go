@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"strings"
 	"time"
 
@@ -52,9 +53,11 @@ const (
 const refreshEvery = 5 * time.Minute
 const reminderEvery = 30 * time.Second
 
-// gen marca de qual rodada de fetch a resposta veio: um refresh manual no
-// meio de outro em voo invalida as respostas antigas (senão o contador de
-// loading fica negativo e dados velhos sobrescrevem os novos).
+// gen marca de qual rodada de fetch a resposta veio. O refresh cancela o
+// ctx da rodada anterior (aborta as requisições de verdade); o gen descarta
+// a janela restante — respostas que completaram antes do cancelamento
+// (senão o contador de loading fica negativo e dados velhos sobrescrevem os
+// novos).
 type glMsg struct {
 	gen int
 	sum *gitlab.Summary
@@ -108,7 +111,9 @@ type Model struct {
 	jiErr   error
 	loading int
 
-	fetchGen int // rodada atual de fetch; respostas de rodadas velhas são descartadas
+	fetchGen    int                // rodada atual de fetch; respostas de rodadas velhas são descartadas
+	fetchCtx    context.Context    // ctx da rodada atual; cancelado quando outra começa
+	fetchCancel context.CancelFunc
 
 	cursor int
 	addErr string // erro da última tentativa de adicionar tarefa (vencimento inválido)
@@ -149,7 +154,8 @@ func New(cfg config.Config, store *tasks.Store, demo bool) Model {
 	sess, _ := session.Load() // mesmo com erro o store volta utilizável
 	glClient := gitlab.New(cfg.GitLab.URL, cfg.GitLab.Token)
 	jiClient := jira.New(cfg.Jira.URL, cfg.Jira.Auth, cfg.Jira.Email, cfg.Jira.Token, cfg.Jira.ComplexityField)
-	return Model{cfg: cfg, store: store, hist: hist, sess: sess, demo: demo, glClient: glClient, jiClient: jiClient, input: ti, filterInput: fi, descInput: ta, spin: sp, vp: viewport.New(80, 20), loading: 2, notified: map[string]bool{}, seenTodos: map[int]bool{}, issueStatus: map[string]string{}, progress: map[string]claude.Progress{}, handles: map[string]*claude.Handle{}, taskCtx: map[string]*claude.TaskContext{}}
+	ctx, cancel := context.WithCancel(context.Background())
+	return Model{cfg: cfg, store: store, hist: hist, sess: sess, demo: demo, glClient: glClient, jiClient: jiClient, fetchCtx: ctx, fetchCancel: cancel, input: ti, filterInput: fi, descInput: ta, spin: sp, vp: viewport.New(80, 20), loading: 2, notified: map[string]bool{}, seenTodos: map[int]bool{}, issueStatus: map[string]string{}, progress: map[string]claude.Progress{}, handles: map[string]*claude.Handle{}, taskCtx: map[string]*claude.TaskContext{}}
 }
 
 func (m Model) Init() tea.Cmd {
@@ -235,19 +241,24 @@ func (m Model) fetchAll() tea.Cmd {
 		)
 	}
 	gl, ji := m.glClient, m.jiClient
+	ctx := m.fetchCtx
 	return tea.Batch(
 		func() tea.Msg {
-			s, err := gl.Fetch()
+			s, err := gl.Fetch(ctx)
 			return glMsg{gen, s, err}
 		},
 		func() tea.Msg {
-			s, err := ji.Fetch()
+			s, err := ji.Fetch(ctx)
 			return jiMsg{gen, s, err}
 		},
 	)
 }
 
 func (m *Model) refresh() tea.Cmd {
+	// Aborta as requisições da rodada anterior em vez de só ignorar as
+	// respostas — sem isso elas seguiriam vivas até o timeout de 15s.
+	m.fetchCancel()
+	m.fetchCtx, m.fetchCancel = context.WithCancel(context.Background())
 	m.fetchGen++
 	m.loading = 2
 	return m.fetchAll()

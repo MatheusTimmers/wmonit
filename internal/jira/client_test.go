@@ -1,6 +1,7 @@
 package jira
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -94,7 +95,7 @@ func TestDoSearchPaginationV2(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL, "bearer", "", "tok", "")
-	issues, code, err := c.doSearch("/rest/api/2/search", "jql", 100, "", map[string]int{"1": 0, "2": 1})
+	issues, code, err := c.doSearch(context.Background(), "/rest/api/2/search", "jql", 100, "", map[string]int{"1": 0, "2": 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +141,7 @@ func TestSearchFallbackV3(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL, "bearer", "", "tok", "")
-	issues, err := c.search("jql", 100, "", nil)
+	issues, err := c.search(context.Background(), "jql", 100, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,10 +168,10 @@ func TestMetadataMemoized(t *testing.T) {
 
 	c := New(srv.URL, "bearer", "", "tok", "")
 	for i := 0; i < 3; i++ {
-		if got := c.resolveCXField(); got != "customfield_1" {
+		if got := c.resolveCXField(context.Background()); got != "customfield_1" {
 			t.Fatalf("cxField = %q", got)
 		}
-		if got := c.resolvePriorities(); got["2"] != 1 {
+		if got := c.resolvePriorities(context.Background()); got["2"] != 1 {
 			t.Fatalf("prios = %v", got)
 		}
 	}

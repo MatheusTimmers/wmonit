@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -634,7 +635,7 @@ func jiraDetail(ji *jira.Client, key string) (*jira.IssueDetail, error) {
 	if ji == nil {
 		return nil, fmt.Errorf("jira não configurado")
 	}
-	return ji.IssueDetail(key)
+	return ji.IssueDetail(context.Background(), key)
 }
 
 // fetchTaskContext compõe o contexto completo da tarefa (Jira + GitLab),
@@ -652,7 +653,7 @@ func fetchTaskContext(gl *gitlab.Client, ji *jira.Client, cfg config.Config, ses
 	}
 	var notes []string
 	if mr != nil && gl != nil {
-		raw, _ := gl.MRNotes(mr.projectID, mr.iid)
+		raw, _ := gl.MRNotes(context.Background(), mr.projectID, mr.iid)
 		notes = noteLines(raw)
 	}
 	if isIssue {

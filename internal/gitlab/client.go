@@ -1,6 +1,7 @@
 package gitlab
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -143,12 +144,12 @@ func (mr MR) ShortTitle() string {
 
 // getResp faz o GET e devolve a resposta com o body aberto (status já
 // validado) — a paginação precisa dos headers além do corpo.
-func (c *Client) getResp(path string, q url.Values) (*http.Response, error) {
+func (c *Client) getResp(ctx context.Context, path string, q url.Values) (*http.Response, error) {
 	u := c.base + "/api/v4" + path
 	if len(q) > 0 {
 		u += "?" + q.Encode()
 	}
-	req, err := http.NewRequest("GET", u, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -164,8 +165,8 @@ func (c *Client) getResp(path string, q url.Values) (*http.Response, error) {
 	return resp, nil
 }
 
-func (c *Client) get(path string, q url.Values, out any) error {
-	resp, err := c.getResp(path, q)
+func (c *Client) get(ctx context.Context, path string, q url.Values, out any) error {
+	resp, err := c.getResp(ctx, path, q)
 	if err != nil {
 		return err
 	}
@@ -179,13 +180,13 @@ const maxPages = 5
 
 // listMRs busca /merge_requests seguindo a paginação (X-Next-Page) — sem
 // isso as métricas subcontam assim que um período passa de uma página.
-func (c *Client) listMRs(q url.Values) ([]MR, error) {
+func (c *Client) listMRs(ctx context.Context, q url.Values) ([]MR, error) {
 	q.Set("per_page", "100")
 	var all []MR
 	page := "1"
 	for i := 0; i < maxPages; i++ {
 		q.Set("page", page)
-		resp, err := c.getResp("/merge_requests", q)
+		resp, err := c.getResp(ctx, "/merge_requests", q)
 		if err != nil {
 			return nil, err
 		}
@@ -206,11 +207,11 @@ func (c *Client) listMRs(q url.Values) ([]MR, error) {
 }
 
 // MRNotes devolve os comentários (notas) de um MR, em ordem cronológica.
-func (c *Client) MRNotes(projectID, iid int) ([]Note, error) {
+func (c *Client) MRNotes(ctx context.Context, projectID, iid int) ([]Note, error) {
 	q := url.Values{"sort": {"asc"}, "order_by": {"created_at"}, "per_page": {"50"}}
 	var notes []Note
 	path := fmt.Sprintf("/projects/%d/merge_requests/%d/notes", projectID, iid)
-	if err := c.get(path, q, &notes); err != nil {
+	if err := c.get(ctx, path, q, &notes); err != nil {
 		return nil, err
 	}
 	return notes, nil
@@ -219,21 +220,21 @@ func (c *Client) MRNotes(projectID, iid int) ([]Note, error) {
 // Todos devolve as pendências abertas do usuário (/todos?state=pending) —
 // review pedido, menções, builds quebrados, etc. A lista alimenta os
 // alertas proativos do wmonit.
-func (c *Client) Todos() ([]Todo, error) {
+func (c *Client) Todos(ctx context.Context) ([]Todo, error) {
 	q := url.Values{"state": {"pending"}, "per_page": {"50"}}
 	var todos []Todo
-	if err := c.get("/todos", q, &todos); err != nil {
+	if err := c.get(ctx, "/todos", q, &todos); err != nil {
 		return nil, err
 	}
 	return todos, nil
 }
 
-func (c *Client) Fetch() (*Summary, error) {
+func (c *Client) Fetch(ctx context.Context) (*Summary, error) {
 	if c.base == "" || c.token == "" {
 		return nil, fmt.Errorf("GitLab não configurado — defina url e token em %s", "~/.config/wmonit/config.toml")
 	}
 	var me user
-	if err := c.get("/user", nil, &me); err != nil {
+	if err := c.get(ctx, "/user", nil, &me); err != nil {
 		return nil, err
 	}
 
@@ -242,26 +243,26 @@ func (c *Client) Fetch() (*Summary, error) {
 	prevMonthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local).AddDate(0, -1, 0)
 
 	var err error
-	if s.OpenMRs, err = c.listMRs(url.Values{
+	if s.OpenMRs, err = c.listMRs(ctx, url.Values{
 		"scope": {"created_by_me"}, "state": {"opened"},
 	}); err != nil {
 		return nil, err
 	}
-	if s.Merged, err = c.listMRs(url.Values{
+	if s.Merged, err = c.listMRs(ctx, url.Values{
 		"scope":         {"created_by_me"},
 		"state":         {"merged"},
 		"updated_after": {prevMonthStart.Format(time.RFC3339)},
 	}); err != nil {
 		return nil, err
 	}
-	if s.Closed, err = c.listMRs(url.Values{
+	if s.Closed, err = c.listMRs(ctx, url.Values{
 		"scope":         {"created_by_me"},
 		"state":         {"closed"},
 		"updated_after": {prevMonthStart.Format(time.RFC3339)},
 	}); err != nil {
 		return nil, err
 	}
-	if s.ReviewPending, err = c.listMRs(url.Values{
+	if s.ReviewPending, err = c.listMRs(ctx, url.Values{
 		"scope":       {"all"},
 		"state":       {"opened"},
 		"reviewer_id": {fmt.Sprint(me.ID)},
@@ -275,7 +276,7 @@ func (c *Client) Fetch() (*Summary, error) {
 	})
 
 	// Pendências do GitLab para os alertas; falha aqui não derruba o resto.
-	s.Todos, _ = c.Todos()
+	s.Todos, _ = c.Todos(ctx)
 
 	return s, nil
 }

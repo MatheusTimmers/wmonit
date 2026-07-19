@@ -1,6 +1,7 @@
 package jira
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -59,12 +60,12 @@ type Summary struct {
 	CXField  string  // campo usado para complexidade; vazio se não encontrado
 }
 
-func (c *Client) get(path string, q url.Values, out any) (int, error) {
+func (c *Client) get(ctx context.Context, path string, q url.Values, out any) (int, error) {
 	u := c.base + path
 	if len(q) > 0 {
 		u += "?" + q.Encode()
 	}
-	req, err := http.NewRequest("GET", u, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 	if err != nil {
 		return 0, err
 	}
@@ -161,7 +162,7 @@ const pageSize = 100
 // doSearch executa a JQL paginando até max issues. O /rest/api/2/search
 // pagina por startAt/total; o /rest/api/3/search/jql (Cloud), por
 // nextPageToken.
-func (c *Client) doSearch(path, jql string, max int, cxField string, prios map[string]int) ([]Issue, int, error) {
+func (c *Client) doSearch(ctx context.Context, path, jql string, max int, cxField string, prios map[string]int) ([]Issue, int, error) {
 	fields := "summary,status,issuetype,duedate,created,resolutiondate,priority"
 	if cxField != "" {
 		fields += "," + cxField
@@ -183,7 +184,7 @@ func (c *Client) doSearch(path, jql string, max int, cxField string, prios map[s
 			q.Set("startAt", fmt.Sprint(startAt))
 		}
 		var sr searchResp
-		code, err := c.get(path, q, &sr)
+		code, err := c.get(ctx, path, q, &sr)
 		if err != nil {
 			return nil, code, err
 		}
@@ -232,11 +233,11 @@ func (c *Client) doSearch(path, jql string, max int, cxField string, prios map[s
 	return all, http.StatusOK, nil
 }
 
-func (c *Client) search(jql string, max int, cxField string, prios map[string]int) ([]Issue, error) {
-	issues, code, err := c.doSearch("/rest/api/2/search", jql, max, cxField, prios)
+func (c *Client) search(ctx context.Context, jql string, max int, cxField string, prios map[string]int) ([]Issue, error) {
+	issues, code, err := c.doSearch(ctx, "/rest/api/2/search", jql, max, cxField, prios)
 	// Jira Cloud removeu /rest/api/2/search; o substituto é /search/jql.
 	if code == http.StatusGone || code == http.StatusNotFound {
-		issues2, _, err2 := c.doSearch("/rest/api/3/search/jql", jql, max, cxField, prios)
+		issues2, _, err2 := c.doSearch(ctx, "/rest/api/3/search/jql", jql, max, cxField, prios)
 		if err2 != nil {
 			// Os dois falharam: os dois erros importam para diagnosticar.
 			return nil, fmt.Errorf("%w (fallback v3: %v)", err, err2)
@@ -251,7 +252,7 @@ func (c *Client) search(jql string, max int, cxField string, prios map[string]in
 // prioridades customizadas (10000+) não têm ordem numérica confiável.
 // Memoizado entre refreshes; em erro devolve nil (o chamador cai no id
 // numérico) e tenta de novo no próximo refresh.
-func (c *Client) resolvePriorities() map[string]int {
+func (c *Client) resolvePriorities(ctx context.Context) map[string]int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.priosCached != nil {
@@ -260,7 +261,7 @@ func (c *Client) resolvePriorities() map[string]int {
 	var ps []struct {
 		ID string `json:"id"`
 	}
-	if _, err := c.get("/rest/api/2/priority", nil, &ps); err != nil {
+	if _, err := c.get(ctx, "/rest/api/2/priority", nil, &ps); err != nil {
 		return nil
 	}
 	m := make(map[string]int, len(ps))
@@ -275,7 +276,7 @@ func (c *Client) resolvePriorities() map[string]int {
 // o primeiro campo cujo nome contenha "complex" (Complexidade, Complexity…).
 // A descoberta (que baixa o catálogo de campos) é memoizada; só um erro de
 // rede faz repetir no próximo refresh.
-func (c *Client) resolveCXField() string {
+func (c *Client) resolveCXField(ctx context.Context) string {
 	if c.cxField != "" {
 		return c.cxField
 	}
@@ -288,7 +289,7 @@ func (c *Client) resolveCXField() string {
 		ID   string `json:"id"`
 		Name string `json:"name"`
 	}
-	if _, err := c.get("/rest/api/2/field", nil, &fields); err != nil {
+	if _, err := c.get(ctx, "/rest/api/2/field", nil, &fields); err != nil {
 		return ""
 	}
 	for _, f := range fields {
@@ -328,7 +329,7 @@ func textOf(raw json.RawMessage) string {
 	return "(conteúdo em rich text — abra no navegador com 'o')"
 }
 
-func (c *Client) doIssue(path string) (*IssueDetail, int, error) {
+func (c *Client) doIssue(ctx context.Context, path string) (*IssueDetail, int, error) {
 	q := url.Values{"fields": {"summary,status,description,comment"}}
 	var resp struct {
 		Key    string `json:"key"`
@@ -349,7 +350,7 @@ func (c *Client) doIssue(path string) (*IssueDetail, int, error) {
 			} `json:"comment"`
 		} `json:"fields"`
 	}
-	code, err := c.get(path, q, &resp)
+	code, err := c.get(ctx, path, q, &resp)
 	if err != nil {
 		return nil, code, err
 	}
@@ -371,10 +372,10 @@ func (c *Client) doIssue(path string) (*IssueDetail, int, error) {
 
 // IssueDetail busca descrição e comentários de uma issue, com o mesmo
 // fallback de endpoint do search para o Jira Cloud.
-func (c *Client) IssueDetail(key string) (*IssueDetail, error) {
-	d, code, err := c.doIssue("/rest/api/2/issue/" + key)
+func (c *Client) IssueDetail(ctx context.Context, key string) (*IssueDetail, error) {
+	d, code, err := c.doIssue(ctx, "/rest/api/2/issue/"+key)
 	if code == http.StatusGone || code == http.StatusNotFound {
-		d2, _, err2 := c.doIssue("/rest/api/3/issue/" + key)
+		d2, _, err2 := c.doIssue(ctx, "/rest/api/3/issue/"+key)
 		if err2 != nil {
 			return nil, fmt.Errorf("%w (fallback v3: %v)", err, err2)
 		}
@@ -383,14 +384,14 @@ func (c *Client) IssueDetail(key string) (*IssueDetail, error) {
 	return d, err
 }
 
-func (c *Client) Fetch() (*Summary, error) {
+func (c *Client) Fetch(ctx context.Context) (*Summary, error) {
 	if c.base == "" || c.token == "" {
 		return nil, fmt.Errorf("Jira não configurado — defina url e token em %s", "~/.config/wmonit/config.toml")
 	}
-	cx := c.resolveCXField()
-	prios := c.resolvePriorities()
+	cx := c.resolveCXField(ctx)
+	prios := c.resolvePriorities(ctx)
 
-	open, err := c.search(`assignee = currentUser() AND statusCategory != Done ORDER BY status, updated DESC`, 100, cx, prios)
+	open, err := c.search(ctx, `assignee = currentUser() AND statusCategory != Done ORDER BY status, updated DESC`, 100, cx, prios)
 	if err != nil {
 		return nil, err
 	}
@@ -399,7 +400,7 @@ func (c *Client) Fetch() (*Summary, error) {
 	prevMonthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local).AddDate(0, -1, 0)
 	jql := fmt.Sprintf(`assignee = currentUser() AND statusCategory = Done AND resolved >= "%s" ORDER BY resolved DESC`,
 		prevMonthStart.Format("2006-01-02"))
-	resolved, err := c.search(jql, 500, cx, prios)
+	resolved, err := c.search(ctx, jql, 500, cx, prios)
 	if err != nil {
 		return nil, err
 	}

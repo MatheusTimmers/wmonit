@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -92,7 +93,7 @@ func (m Model) fetchDetail(it *focusItem) tea.Cmd {
 			} else {
 				b.WriteString(dim.Render("(sem descrição)") + "\n\n")
 			}
-			notes, err := gl.MRNotes(mr.ProjectID, mr.IID)
+			notes, err := gl.MRNotes(context.Background(), mr.ProjectID, mr.IID)
 			if err != nil {
 				return detailMsg{err: err}
 			}
@@ -117,7 +118,7 @@ func (m Model) fetchDetail(it *focusItem) tea.Cmd {
 	linked := m.linkedMRsText(is.Key)
 	wrap := m.wrapText
 	return func() tea.Msg {
-		d, err := ji.IssueDetail(is.Key)
+		d, err := ji.IssueDetail(context.Background(), is.Key)
 		if err != nil {
 			return detailMsg{err: err}
 		}
