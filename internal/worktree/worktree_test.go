@@ -109,3 +109,37 @@ func TestAddExistingBranch(t *testing.T) {
 		t.Fatal("worktree sem os arquivos do repo:", err)
 	}
 }
+
+func TestExcludeFiles(t *testing.T) {
+	repo := t.TempDir()
+	newRepo(t, repo)
+	wt := filepath.Join(t.TempDir(), "wt")
+	if err := Add(repo, wt, "feature/x", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := ExcludeFiles(wt, "WMONIT_PLAN.md"); err != nil {
+		t.Fatal(err)
+	}
+	// Idempotente: segunda chamada não duplica.
+	if err := ExcludeFiles(wt, "WMONIT_PLAN.md"); err != nil {
+		t.Fatal(err)
+	}
+	// O arquivo excluído não suja o status do worktree.
+	if err := os.WriteFile(filepath.Join(wt, "WMONIT_PLAN.md"), []byte("plano\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dirty, err := HasChanges(wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dirty {
+		t.Errorf("worktree sujo: o arquivo de plano deveria estar excluído do status")
+	}
+	// E um arquivo normal continua contando como mudança.
+	if err := os.WriteFile(filepath.Join(wt, "novo.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if dirty, _ = HasChanges(wt); !dirty {
+		t.Errorf("mudança real não detectada após o exclude")
+	}
+}

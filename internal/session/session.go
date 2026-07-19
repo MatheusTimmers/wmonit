@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -18,10 +19,17 @@ type Status string
 const (
 	StatusPending   Status = "pending"   // criada, ainda não executada
 	StatusRunning   Status = "running"   // claude em execução
-	StatusDone      Status = "done"      // claude terminou, aguardando fechamento
+	StatusWaiting   Status = "waiting"   // fase concluída, aguardando aprovação (gate)
+	StatusDone      Status = "done"      // pipeline terminou, aguardando fechamento
 	StatusFailed    Status = "failed"    // claude saiu com erro
 	StatusCompleted Status = "completed" // fechada: worktree removido
 	StatusCancelled Status = "cancelled" // cancelada pelo usuário
+)
+
+// Tipos de origem da sessão.
+const (
+	KindIssue = "issue" // issue do Jira (branch nova)
+	KindMR    = "mr"    // merge request existente
 )
 
 // Fases do pipeline de agents de uma sessão.
@@ -44,29 +52,66 @@ func NextPhase(p string) string {
 
 // Session é uma sessão de trabalho: task + worktree + execução do Claude.
 type Session struct {
-	ID       string     `json:"id"`
-	Title    string     `json:"title"`
-	Key      string     `json:"key"` // chave Jira (ABC-123) ou ref do MR (hades!9470)
-	URL      string     `json:"url,omitempty"`
-	Service  string     `json:"service"`  // nome do serviço em sources_dir
-	Repo     string     `json:"repo"`     // caminho do repositório principal
-	Worktree string     `json:"worktree"` // caminho do worktree
-	Branch   string     `json:"branch"`
-	Prompt   string     `json:"prompt,omitempty"`
-	UserNote string     `json:"user_note,omitempty"` // explicação digitada no wmonit
-	Phase    string     `json:"phase,omitempty"`     // fase atual do pipeline (plan/dev/review)
-	LogFile  string     `json:"log_file,omitempty"`
-	ClaudeID string     `json:"claude_session_id,omitempty"` // p/ --resume
-	Status   Status     `json:"status"`
-	Created  time.Time  `json:"created"`
-	Finished *time.Time `json:"finished,omitempty"`
-	Err      string     `json:"err,omitempty"`
+	ID       string `json:"id"`
+	Title    string `json:"title"`
+	Key      string `json:"key"` // chave Jira (ABC-123) ou ref do MR (hades!9470)
+	URL      string `json:"url,omitempty"`
+	Service  string `json:"service"`  // nome do serviço em sources_dir
+	Repo     string `json:"repo"`     // caminho do repositório principal
+	Worktree string `json:"worktree"` // caminho do worktree
+	Branch   string `json:"branch"`
+	Prompt   string `json:"prompt,omitempty"`
+	UserNote string `json:"user_note,omitempty"` // explicação digitada no wmonit
+	Kind     string `json:"kind,omitempty"`      // origem: issue ou mr
+	Phase    string `json:"phase,omitempty"`     // fase atual do pipeline (plan/dev/review)
+	// ClaudeIDs guarda o session_id do Claude por fase — retomar a fase
+	// certa exige a conversa certa. ClaudeID mantém o da última fase
+	// (compatibilidade e modo interativo).
+	ClaudeIDs map[string]string `json:"claude_ids,omitempty"`
+	// Results guarda o resumo final de cada fase (plano, o que o dev fez,
+	// veredito do review) para consulta no TUI.
+	Results  map[string]string `json:"results,omitempty"`
+	LogFile  string            `json:"log_file,omitempty"`
+	ClaudeID string            `json:"claude_session_id,omitempty"` // p/ --resume
+	Status   Status            `json:"status"`
+	Created  time.Time         `json:"created"`
+	Finished *time.Time        `json:"finished,omitempty"`
+	Err      string            `json:"err,omitempty"`
 }
 
 // Active informa se a sessão ainda ocupa um worktree.
 func (s Session) Active() bool {
 	return s.Status != StatusCompleted && s.Status != StatusCancelled
 }
+
+// SetClaudeID registra a conversa do Claude da fase (e a última, para o
+// modo interativo e sessões antigas).
+func (s *Session) SetClaudeID(phase, id string) {
+	if s.ClaudeIDs == nil {
+		s.ClaudeIDs = map[string]string{}
+	}
+	s.ClaudeIDs[phase] = id
+	s.ClaudeID = id
+}
+
+// SetResult guarda o resumo final da fase.
+func (s *Session) SetResult(phase, result string) {
+	if s.Results == nil {
+		s.Results = map[string]string{}
+	}
+	s.Results[phase] = result
+}
+
+// IsIssue informa se a sessão veio de uma issue do Jira; sessões antigas
+// (sem Kind) caem no formato da chave.
+func (s Session) IsIssue() bool {
+	if s.Kind != "" {
+		return s.Kind == KindIssue
+	}
+	return jiraKeyPattern.MatchString(s.Key)
+}
+
+var jiraKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]*-\d+$`)
 
 type Store struct {
 	path     string

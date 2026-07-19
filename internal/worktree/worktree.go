@@ -76,6 +76,44 @@ func Add(repo, path, branch string, create bool) error {
 	return err
 }
 
+// ExcludeFiles adiciona nomes ao info/exclude do worktree (ignore local,
+// não versionado) — usado para o arquivo de plano do pipeline não sujar o
+// status nem ir parar num commit.
+func ExcludeFiles(path string, names ...string) error {
+	out, err := git(path, "rev-parse", "--git-path", "info/exclude")
+	if err != nil {
+		return err
+	}
+	exclude := strings.TrimSpace(out)
+	if !filepath.IsAbs(exclude) {
+		exclude = filepath.Join(path, exclude)
+	}
+	if err := os.MkdirAll(filepath.Dir(exclude), 0o755); err != nil {
+		return err
+	}
+	existing, _ := os.ReadFile(exclude)
+	lines := map[string]bool{}
+	for _, l := range strings.Split(string(existing), "\n") {
+		lines[strings.TrimSpace(l)] = true
+	}
+	var add []string
+	for _, n := range names {
+		if !lines[n] {
+			add = append(add, n)
+		}
+	}
+	if len(add) == 0 {
+		return nil
+	}
+	f, err := os.OpenFile(exclude, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteString(strings.Join(add, "\n") + "\n")
+	return err
+}
+
 // List devolve os worktrees de repo (inclui o principal).
 func List(repo string) ([]Worktree, error) {
 	out, err := git(repo, "worktree", "list", "--porcelain")

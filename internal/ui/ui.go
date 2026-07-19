@@ -68,10 +68,13 @@ type Model struct {
 	pending        *pendingSession
 	sessInfo       string // última mensagem de status das sessões
 	progress       map[string]claude.Progress
-	handles        map[string]*claude.Handle // execuções vivas, p/ cancelar
+	handles        map[string]*claude.Handle      // execuções vivas, p/ cancelar
+	taskCtx        map[string]*claude.TaskContext // contexto por sessão (1 busca por pipeline)
+	ticking        bool                           // cadeia de polling das sessões viva
 
 	tab     tab
 	gl      *gitlab.Summary
+	mine    []gitlab.MR // MRs do usuário deduplicados (cache por fetch)
 	glErr   error
 	ji      *jira.Summary
 	jiErr   error
@@ -112,7 +115,7 @@ func New(cfg config.Config, store *tasks.Store) Model {
 	ta.SetHeight(8)
 	hist, _ := history.Load() // sem histórico ainda não é erro fatal
 	sess, _ := session.Load() // mesmo com erro o store volta utilizável
-	return Model{cfg: cfg, store: store, hist: hist, sess: sess, input: ti, filterInput: fi, descInput: ta, spin: sp, vp: viewport.New(80, 20), loading: 2, notified: map[string]bool{}, progress: map[string]claude.Progress{}, handles: map[string]*claude.Handle{}}
+	return Model{cfg: cfg, store: store, hist: hist, sess: sess, input: ti, filterInput: fi, descInput: ta, spin: sp, vp: viewport.New(80, 20), loading: 2, notified: map[string]bool{}, progress: map[string]claude.Progress{}, handles: map[string]*claude.Handle{}, taskCtx: map[string]*claude.TaskContext{}}
 }
 
 func (m Model) Init() tea.Cmd {
@@ -229,6 +232,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case glMsg:
 		m.loading--
 		m.gl, m.glErr = msg.sum, msg.err
+		m.mine = nil
+		if m.gl != nil {
+			m.mine = m.gl.Mine()
+		}
 		m.updated = time.Now()
 		m.recordToday()
 		return m, nil
@@ -259,45 +266,52 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.anyRunning() {
 			return m, sessTick()
 		}
+		m.ticking = false
 		return m, nil
 
 	case sessFinishedMsg:
 		delete(m.handles, msg.id)
+		if msg.ctx != nil {
+			// Contexto da tarefa buscado nesta fase: as próximas reutilizam.
+			m.taskCtx[msg.id] = msg.ctx
+		}
 		if s := m.sess.Find(msg.id); s != nil {
 			if s.Status == session.StatusCancelled {
 				m.sess.Save()
 				return m, nil
 			}
 			s.Prompt = msg.prompt
-			// O log final traz o session_id do Claude (para retomar) e o resumo.
+			// O log final traz o session_id do Claude (para retomar a fase
+			// certa depois) e o resumo da fase.
 			if s.LogFile != "" {
 				if p, err := claude.ReadProgress(s.LogFile); err == nil {
 					m.progress[s.ID] = p
 					if p.SessionID != "" {
-						s.ClaudeID = p.SessionID
+						s.SetClaudeID(s.Phase, p.SessionID)
 					}
-				}
-			}
-			if msg.err == nil {
-				// Fase terminou bem → avança o pipeline até o review.
-				if next := session.NextPhase(s.Phase); next != "" {
-					return m.runPhase(s, next, false)
+					if p.Result != "" {
+						s.SetResult(s.Phase, p.Result)
+					}
 				}
 			}
 			now := time.Now()
 			s.Finished = &now
-			if msg.err != nil {
+			title := "wmonit — sessão " + s.Key
+			var body string
+			switch {
+			case msg.err != nil:
 				s.Status = session.StatusFailed
 				s.Err = msg.err.Error()
-			} else {
+				body = "falhou na fase " + phaseLabel(s.Phase) + ": " + s.Err
+			case session.NextPhase(s.Phase) != "":
+				// Gate manual: a próxima fase só roda com a sua aprovação.
+				s.Status = session.StatusWaiting
+				body = phaseLabel(s.Phase) + " concluído — revise (enter) e aprove (s)"
+			default:
 				s.Status = session.StatusDone
+				body = "review concluído — veja o veredito (enter)"
 			}
 			m.sess.Save()
-			title := "wmonit — sessão " + s.Key
-			body := "pipeline concluído — revise o veredito do review"
-			if msg.err != nil {
-				body = "Claude falhou na fase " + phaseLabel(s.Phase) + ": " + s.Err
-			}
 			return m, notifyCmd(title, body)
 		}
 		return m, nil
@@ -332,6 +346,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else if s := m.sess.Find(msg.id); s != nil && msg.status != "" {
 			s.Status = msg.status
 		}
+		// Estado de runtime da sessão que saiu de cena não fica para trás.
+		delete(m.progress, msg.id)
+		delete(m.taskCtx, msg.id)
 		m.sess.Save()
 		return m, nil
 

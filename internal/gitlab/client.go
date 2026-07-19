@@ -58,7 +58,25 @@ type Summary struct {
 	Username      string
 	OpenMRs       []MR
 	Merged        []MR // mergeados desde o início do mês anterior
+	Closed        []MR // fechados sem merge desde o início do mês anterior
 	ReviewPending []MR
+}
+
+// Mine junta os MRs do usuário (abertos, mergeados e fechados) sem
+// duplicar — a base para métricas por data de criação, onde o dia
+// trabalhado é o da abertura.
+func (s *Summary) Mine() []MR {
+	seen := map[string]bool{}
+	var out []MR
+	for _, mr := range append(append(append([]MR{}, s.OpenMRs...), s.Merged...), s.Closed...) {
+		id := fmt.Sprintf("%d-%d", mr.ProjectID, mr.IID)
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, mr)
+	}
+	return out
 }
 
 func (mr MR) MergedTime() time.Time {
@@ -156,6 +174,16 @@ func (c *Client) Fetch() (*Summary, error) {
 		"per_page":      {"100"},
 	}
 	if err := c.get("/merge_requests", q, &s.Merged); err != nil {
+		return nil, err
+	}
+
+	q = url.Values{
+		"scope":         {"created_by_me"},
+		"state":         {"closed"},
+		"updated_after": {prevMonthStart.Format(time.RFC3339)},
+		"per_page":      {"100"},
+	}
+	if err := c.get("/merge_requests", q, &s.Closed); err != nil {
 		return nil, err
 	}
 

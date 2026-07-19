@@ -58,3 +58,15 @@ func TestRunCapturesOutput(t *testing.T) {
 		}
 	}
 }
+
+func TestResumeAndFixPrompts(t *testing.T) {
+	if p := ResumePrompt(); !strings.Contains(p, "Continue a tarefa") {
+		t.Errorf("ResumePrompt inesperado: %s", p)
+	}
+	p := FixPrompt("AJUSTES NECESSÁRIOS\n- bug em x.go:10")
+	for _, want := range []string{"bug em x.go:10", "NÃO faça push", PlanFile} {
+		if !strings.Contains(p, want) {
+			t.Errorf("FixPrompt sem %q:\n%s", want, p)
+		}
+	}
+}

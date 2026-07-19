@@ -66,23 +66,16 @@ func createdIn(mrs []gitlab.MR, start, end time.Time) []gitlab.MR {
 	return out
 }
 
-// myMRs junta MRs abertos e mergeados sem duplicar — a base para contar
-// MRs criados por período (o dia trabalhado é o da abertura, não o do merge).
+// myMRs devolve os MRs do usuário deduplicados — cacheado no glMsg para
+// não realocar a cada render; o fallback cobre Models montados em testes.
 func (m Model) myMRs() []gitlab.MR {
+	if m.mine != nil {
+		return m.mine
+	}
 	if m.gl == nil {
 		return nil
 	}
-	seen := map[string]bool{}
-	var out []gitlab.MR
-	for _, mr := range append(append([]gitlab.MR{}, m.gl.OpenMRs...), m.gl.Merged...) {
-		id := fmt.Sprintf("%d-%d", mr.ProjectID, mr.IID)
-		if seen[id] {
-			continue
-		}
-		seen[id] = true
-		out = append(out, mr)
-	}
-	return out
+	return m.gl.Mine()
 }
 
 // resolvedIn filtra issues resolvidas entre as datas (inclusivas, YYYY-MM-DD).
@@ -265,7 +258,7 @@ func (m Model) footer(vp interface{ ScrollPercent() float64 }) string {
 	} else if m.tab == tabGitLab || m.tab == tabJira {
 		help = "j/k selecionar · enter detalhes · o navegador · c sessão · / buscar · r atualizar · q sair"
 	} else if m.tab == tabSessoes {
-		help = "s iniciar/retomar · t interativo · v diff · e editor · f concluir · x cancelar · d/D remover"
+		help = "s iniciar/aprovar/corrigir · enter resultado · t interativo · v diff · e editor · f concluir · x cancelar · d/D remover"
 	} else if m.tab == tabTarefas {
 		if m.adding {
 			help = "enter salvar · esc cancelar"
@@ -606,18 +599,25 @@ func (m Model) viewDesempenho() string {
 	// equivalente (mesmo nº de dias decorridos), para um termômetro justo.
 	b.WriteString(section.Render("⚖ Tendência") + "\n")
 
+	// writeMRTrends compara abertos e mergeados do período atual contra o
+	// anterior equivalente — usado nas três janelas (dia, semana, mês).
+	writeMRTrends := func(curStart, curEnd, prevStart, prevEnd time.Time) {
+		if m.gl == nil {
+			return
+		}
+		c := len(createdIn(mine, curStart, curEnd))
+		p := len(createdIn(mine, prevStart, prevEnd))
+		b.WriteString(trendLine("MRs abertos", float64(c), float64(p), false) + "\n")
+		c = len(mergedIn(m.gl.Merged, curStart, curEnd))
+		p = len(mergedIn(m.gl.Merged, prevStart, prevEnd))
+		b.WriteString(trendLine("MRs mergeados", float64(c), float64(p), false) + "\n")
+	}
+
 	// Hoje vs ontem.
 	yStart := curDayStart.AddDate(0, 0, -1)
 	yDate := yStart.Format("2006-01-02")
 	b.WriteString(dim.Render("  hoje vs ontem") + "\n")
-	if m.gl != nil {
-		c := len(createdIn(mine, curDayStart, now))
-		p := len(createdIn(mine, yStart, curDayStart))
-		b.WriteString(trendLine("MRs abertos", float64(c), float64(p), false) + "\n")
-		c = len(mergedIn(m.gl.Merged, curDayStart, now))
-		p = len(mergedIn(m.gl.Merged, yStart, curDayStart))
-		b.WriteString(trendLine("MRs mergeados", float64(c), float64(p), false) + "\n")
-	}
+	writeMRTrends(curDayStart, now, yStart, curDayStart)
 	if m.ji != nil {
 		c := len(resolvedIn(m.ji.Resolved, today, today))
 		p := len(resolvedIn(m.ji.Resolved, yDate, yDate))
@@ -629,14 +629,7 @@ func (m Model) viewDesempenho() string {
 	lastWeekStart := weekStart.AddDate(0, 0, -7)
 	lastWeekEnd := lastWeekStart.Add(elapsed)
 	b.WriteString(dim.Render(fmt.Sprintf("  esta semana vs passada (até %s)", now.Format("02/01"))) + "\n")
-	if m.gl != nil {
-		c := len(createdIn(mine, weekStart, now))
-		p := len(createdIn(mine, lastWeekStart, lastWeekEnd))
-		b.WriteString(trendLine("MRs abertos", float64(c), float64(p), false) + "\n")
-		c = len(mergedIn(m.gl.Merged, weekStart, now))
-		p = len(mergedIn(m.gl.Merged, lastWeekStart, lastWeekEnd))
-		b.WriteString(trendLine("MRs mergeados", float64(c), float64(p), false) + "\n")
-	}
+	writeMRTrends(weekStart, now, lastWeekStart, lastWeekEnd)
 	if m.ji != nil {
 		c := len(resolvedIn(m.ji.Resolved, weekStart.Format("2006-01-02"), today))
 		p := len(resolvedIn(m.ji.Resolved, lastWeekStart.Format("2006-01-02"), lastWeekEnd.Format("2006-01-02")))
@@ -655,14 +648,7 @@ func (m Model) viewDesempenho() string {
 		prevMonthAll = resolvedIn(m.ji.Resolved, dPrev, prevEndDate)
 	}
 	b.WriteString(dim.Render(fmt.Sprintf("  %s vs %s (até o dia %d)", ptMonth(curStart), ptMonth(prevStart), prevCmpEnd.Day())) + "\n")
-	if m.gl != nil {
-		c := len(createdIn(mine, curStart, now))
-		p := len(createdIn(mine, prevStart, prevCmpEnd.AddDate(0, 0, 1)))
-		b.WriteString(trendLine("MRs abertos", float64(c), float64(p), false) + "\n")
-		c = len(mergedIn(m.gl.Merged, curStart, now))
-		p = len(mergedIn(m.gl.Merged, prevStart, prevCmpEnd.AddDate(0, 0, 1)))
-		b.WriteString(trendLine("MRs mergeados", float64(c), float64(p), false) + "\n")
-	}
+	writeMRTrends(curStart, now, prevStart, prevCmpEnd.AddDate(0, 0, 1))
 	if m.ji != nil {
 		b.WriteString(trendLine("Issues resolvidas", float64(len(curResolved)), float64(len(prevResolved)), false) + "\n")
 		curLT, prevLT := avgLeadDays(curResolved), avgLeadDays(prevResolved)
