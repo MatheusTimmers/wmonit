@@ -55,15 +55,15 @@ func (c TaskContext) header() string {
 	return b.String()
 }
 
-// buildNotes são as regras de build destes repositórios, iguais para todas
-// as fases — sem elas os agentes queimam tempo/tokens tentando buildar do
-// jeito errado.
+// buildNotes avisa que o worktree das sessões não builda — submodules e
+// dependências não resolvem nele —, igual para todas as fases; sem isso
+// os agentes queimam tempo/tokens tentando buildar.
 func buildNotes() string {
 	var b strings.Builder
-	b.WriteString("Build e testes neste repositório:\n")
-	b.WriteString("- ANTES de qualquer build, rode `git submodule update --init --force` — sem isso as dependências ficam erradas e o build falha.\n")
-	b.WriteString("- Builde APENAS o .dproj que tem \"app\" no nome; os outros .dproj não são o alvo.\n")
-	b.WriteString("- Se o submodule update ou o build falharem, PARE de tentar buildar: não insista com alternativas nem gaste turnos nisso. Siga com o restante da tarefa e registre no resumo final a ressalva de que o build/validação fica por conta do usuário.\n\n")
+	b.WriteString("Build e testes neste worktree:\n")
+	b.WriteString("- NÃO rode build nem testes: este é um git worktree isolado e o build NÃO funciona aqui. Não gaste turnos tentando, nem com alternativas.\n")
+	b.WriteString("- Valide por leitura: releia o diff, confira assinaturas/chamadas e as convenções do código existente.\n")
+	b.WriteString("- Registre no resumo final que build e testes ficam por conta do usuário.\n\n")
 	return b.String()
 }
 
@@ -78,7 +78,7 @@ func PlanPrompt(c TaskContext) string {
 		b.WriteString("- Esta branch já existia e pode conter trabalho em andamento: revise os commits e o diff contra a branch base antes de planejar o que falta.\n")
 	}
 	b.WriteString("- Compile o entendimento da tarefa (objetivo, requisitos, dúvidas/assunções) e um plano de implementação passo a passo.\n")
-	fmt.Fprintf(&b, "- Grave tudo no arquivo %s na raiz do repositório, em markdown, com as seções: Objetivo, Contexto, Assunções, Plano (passos numerados com arquivos envolvidos), Validação (como buildar/testar).\n", PlanFile)
+	fmt.Fprintf(&b, "- Grave tudo no arquivo %s na raiz do repositório, em markdown, com as seções: Objetivo, Contexto, Assunções, Plano (passos numerados com arquivos envolvidos), Validação (o que o usuário deve buildar/testar por conta própria).\n", PlanFile)
 	b.WriteString("- NÃO modifique nenhum outro arquivo, NÃO faça commit nem push.\n")
 	b.WriteString("- Ao final, responda com um resumo do plano em poucas linhas.\n")
 	return b.String()
@@ -93,7 +93,7 @@ func DevPrompt(c TaskContext) string {
 	b.WriteString("Instruções:\n")
 	b.WriteString("- Implemente o plano nesta branch (você já está nela).\n")
 	b.WriteString("- Siga as convenções do código existente.\n")
-	b.WriteString("- Rode build e testes para validar antes de terminar.\n")
+	b.WriteString("- Antes de terminar, releia o diff completo procurando erros óbvios.\n")
 	fmt.Fprintf(&b, "- Faça commits pequenos com mensagens claras; NÃO faça push e NÃO commite o %s.\n", PlanFile)
 	b.WriteString("- Se algum passo do plano se mostrar inviável, adapte e registre o desvio no resumo final.\n")
 	b.WriteString("- Ao final, resuma o que foi feito e o que ficou pendente.\n")
@@ -116,7 +116,7 @@ func FixPrompt(verdict string) string {
 	b.WriteString("Aplique as correções necessárias:\n")
 	b.WriteString("- Revise o estado atual do repositório antes de mexer.\n")
 	b.WriteString("- Corrija os problemas apontados; se discordar de algum, justifique no resumo final.\n")
-	b.WriteString("- Rode build e testes para validar.\n")
+	b.WriteString("- Releia o diff das correções antes de terminar.\n")
 	fmt.Fprintf(&b, "- Faça commits pequenos com mensagens claras; NÃO faça push e NÃO commite o %s.\n", PlanFile)
 	b.WriteString("- Ao final, resuma o que foi corrigido.\n")
 	return b.String()
@@ -130,8 +130,7 @@ func ReviewPrompt(c TaskContext) string {
 	fmt.Fprintf(&b, "Um agente implementou a tarefa nesta branch seguindo o plano em %s. Revise o trabalho:\n", PlanFile)
 	b.WriteString("- Use git (log/diff contra a branch base) para ver todas as mudanças feitas, incluindo o que não foi commitado.\n")
 	b.WriteString("- Verifique se o plano e a tarefa foram atendidos, procure bugs, casos de borda, problemas de segurança e desvios das convenções do código.\n")
-	b.WriteString("- Rode build e testes e reporte o resultado.\n")
-	b.WriteString("- Se o build não for possível por problema de ambiente/submodule (e não do código), isso NÃO é motivo para reprovar: avalie o código e, estando ele correto, responda APROVADO com a ressalva de que o usuário fará o build por conta própria.\n")
+	b.WriteString("- A revisão é por leitura: build e testes ficam com o usuário, e a falta deles NÃO é motivo para reprovar — avalie o código em si.\n")
 	b.WriteString("- Responda com um veredito: APROVADO ou AJUSTES NECESSÁRIOS, seguido da lista de problemas encontrados (arquivo:linha) por gravidade. Não corrija nada.\n")
 	return b.String()
 }

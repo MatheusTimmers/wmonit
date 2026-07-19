@@ -127,10 +127,13 @@ comentários do MR ligado, e o template do serviço (`[claude.templates]`):
 1. **plan** (opus) — explora o repositório (e o que já existe na branch, no
    caso de MR) e grava o plano em `WMONIT_PLAN.md` na raiz do worktree (o
    arquivo é excluído do git via `info/exclude`, não suja o status).
-2. **dev** (sonnet) — implementa seguindo o plano, valida com build/testes
-   e faz commits (sem push).
-3. **review** (opus) — revisa o diff, roda build/testes e responde com um
-   veredito (APROVADO ou AJUSTES NECESSÁRIOS); não altera código.
+2. **dev** (sonnet) — implementa seguindo o plano e faz commits (sem push).
+3. **review** (opus) — revisa o diff e responde com um veredito (APROVADO
+   ou AJUSTES NECESSÁRIOS); não altera código.
+
+Os agentes são instruídos a **não rodar build nem testes**: o worktree
+isolado não builda (submodules/dependências não resolvem nele), então a
+validação fica por sua conta depois do `f`/merge da branch.
 
 **Cada fase tem um gate manual:** ao terminar, a sessão fica
 "⏸ aguardando aprovação" — `enter` mostra o resultado da fase (e o
