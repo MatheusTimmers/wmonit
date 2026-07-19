@@ -17,6 +17,28 @@ func (m Model) viewReport() string {
 
 	b.WriteString(section.Render("📋 Relatório do dia — "+now.Format("02/01/2006")) + "\n\n")
 
+	// MRs abertos (criados) hoje.
+	b.WriteString(section.Render("📬 MRs abertos hoje") + "\n")
+	switch {
+	case m.glErr != nil:
+		b.WriteString(errStyle.Render("  "+m.glErr.Error()) + "\n")
+	case m.gl == nil:
+		b.WriteString(dim.Render("  carregando…") + "\n")
+	default:
+		opened := createdIn(m.myMRs(), dayStart, dayEnd)
+		if len(opened) == 0 {
+			b.WriteString(dim.Render("  nenhum") + "\n")
+		}
+		for _, mr := range opened {
+			line := "  " + dim.Render(shortRef(mr)) + " " + mr.ShortTitle()
+			if k := mr.JiraKey(); k != "" {
+				line += dim.Render(" #" + k)
+			}
+			b.WriteString(line + "\n")
+		}
+	}
+	b.WriteString("\n")
+
 	// MRs mergeados hoje.
 	b.WriteString(section.Render("✅ MRs mergeados hoje") + "\n")
 	switch {
@@ -82,8 +104,9 @@ func (m Model) reportSummary() string {
 	now := time.Now()
 	today := now.Format("2006-01-02")
 	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
-	mrs, iss, tsk := 0, 0, 0
+	opened, mrs, iss, tsk := 0, 0, 0, 0
 	if m.gl != nil {
+		opened = len(createdIn(m.myMRs(), dayStart, dayStart.AddDate(0, 0, 1)))
 		mrs = len(mergedIn(m.gl.Merged, dayStart, dayStart.AddDate(0, 0, 1)))
 	}
 	if m.ji != nil {
@@ -94,5 +117,5 @@ func (m Model) reportSummary() string {
 			tsk++
 		}
 	}
-	return fmt.Sprintf("%d MRs · %d issues · %d tarefas", mrs, iss, tsk)
+	return fmt.Sprintf("%d MRs abertos · %d mergeados · %d issues · %d tarefas", opened, mrs, iss, tsk)
 }
