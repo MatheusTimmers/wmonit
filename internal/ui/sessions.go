@@ -551,7 +551,7 @@ func (m Model) runPhase(s *session.Session, phase string, resume bool) (tea.Mode
 				prompt = claude.PlanPrompt(ctx)
 			}
 		}
-		err := claude.Run(cfg.Claude.Bin, sess.Worktree, prompt, sess.LogFile, resumeID, h)
+		err := claude.Run(cfg.Claude.Bin, sess.Worktree, prompt, sess.LogFile, cfg.Claude.Models[phase], resumeID, h)
 		return sessFinishedMsg{id: sess.ID, prompt: prompt, err: err}
 	}
 	return m, tea.Batch(run, sessTick())
