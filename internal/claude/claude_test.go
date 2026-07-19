@@ -20,7 +20,8 @@ func TestPipelinePrompts(t *testing.T) {
 		HasBranch:   true,
 	}
 	common := []string{"ABC-123", "corrigir rota", "http://jira/ABC-123", "foque no módulo de rotas",
-		"descrição aqui", "cuidado com o cache", "hades!9470", "rode make test"}
+		"descrição aqui", "cuidado com o cache", "hades!9470", "rode make test",
+		"git submodule update --init --force", "\"app\" no nome"}
 	for name, p := range map[string]string{"plan": PlanPrompt(c), "dev": DevPrompt(c), "review": ReviewPrompt(c)} {
 		for _, want := range append(common, PlanFile) {
 			if !strings.Contains(p, want) {
@@ -64,7 +65,7 @@ func TestResumeAndFixPrompts(t *testing.T) {
 		t.Errorf("ResumePrompt inesperado: %s", p)
 	}
 	p := FixPrompt("AJUSTES NECESSÁRIOS\n- bug em x.go:10")
-	for _, want := range []string{"bug em x.go:10", "NÃO faça push", PlanFile} {
+	for _, want := range []string{"bug em x.go:10", "NÃO faça push", PlanFile, "git submodule update --init --force"} {
 		if !strings.Contains(p, want) {
 			t.Errorf("FixPrompt sem %q:\n%s", want, p)
 		}
