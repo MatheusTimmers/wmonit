@@ -39,16 +39,18 @@ type Claude struct {
 	PermissionMode string            `toml:"permission_mode"`
 }
 
+type Editor struct {
+	Bin string `toml:"bin"`
+}
+
 type Config struct {
 	GitLab GitLab `toml:"gitlab"`
 	Jira   Jira   `toml:"jira"`
 	Goals  Goals  `toml:"goals"`
 	Claude Claude `toml:"claude"`
+	Editor Editor `toml:"editor"`
 }
 
-// defaultSourcesDir é o diretório-raiz dos repositórios quando o config não
-// define sources_dir. No Windows mantém c:/Fontes (setup de trabalho); nos
-// demais SOs cai em ~/Projects, já que o caminho do Windows não existe lá.
 func defaultSourcesDir() string {
 	if runtime.GOOS == "windows" {
 		return "c:/Fontes"

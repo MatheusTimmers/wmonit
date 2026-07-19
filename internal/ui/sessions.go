@@ -253,6 +253,10 @@ func (m Model) updateDescribe(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+	case "ctrl+e":
+		// Edita a explicação no editor externo (nvim): leva o texto atual e
+		// traz de volta o que for salvo. A TUI fica suspensa enquanto isso.
+		return m, editNoteCmd(m.cfg, m.descInput.Value())
 	}
 	var cmd tea.Cmd
 	m.descInput, cmd = m.descInput.Update(msg)
@@ -281,7 +285,7 @@ func (m Model) viewDescribe() string {
 	b.WriteString(dim.Render("modo: ") + mode + dim.Render("  (ctrl+r troca)") + "\n")
 	b.WriteString(dim.Render(expl) + "\n\n")
 	b.WriteString(m.descInput.View() + "\n\n")
-	b.WriteString(dim.Render(start + " · ctrl+r troca o modo · esc cancela"))
+	b.WriteString(dim.Render(start + " · ctrl+e edita no editor · ctrl+r troca o modo · esc cancela"))
 	return b.String()
 }
 
@@ -416,7 +420,7 @@ func (m Model) sessionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "e":
 		if s := m.selectedSession(); s != nil && s.Active() {
-			return m, openEditorCmd(s.Worktree)
+			return m, openEditorCmd(m.cfg, s.Worktree)
 		}
 	case "f":
 		if s := m.selectedSession(); s != nil &&

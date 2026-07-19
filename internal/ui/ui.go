@@ -392,6 +392,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case editorClosedMsg:
+		// Abrir o worktree no editor não devolve conteúdo; só reportamos erro.
+		if msg.err != nil {
+			m.sessInfo = errStyle.Render("editor: " + msg.err.Error())
+		}
+		return m, nil
+
+	case descEditedMsg:
+		// Voltou do editor da explicação: traz o texto editado pro textbox.
+		if msg.err != nil {
+			m.sessInfo = errStyle.Render("editor: " + msg.err.Error())
+		} else {
+			m.descInput.SetValue(strings.TrimRight(msg.text, "\n"))
+		}
+		if m.mode == modeDescribing {
+			m.descInput.Focus()
+			return m, textarea.Blink
+		}
+		return m, nil
+
 	case sessActionMsg:
 		if msg.err != nil {
 			m.sessInfo = errStyle.Render(msg.err.Error())
