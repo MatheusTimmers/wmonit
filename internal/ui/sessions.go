@@ -137,14 +137,14 @@ func (m Model) newSessionFromItem(it *focusItem) (sess session.Session, guess st
 			mode = session.ModeReview
 		}
 		sess = session.Session{
-			Key:    shortRef(mr),
+			Key:    mr.ShortRef(),
 			Title:  mr.ShortTitle(),
 			URL:    mr.WebURL,
 			Branch: mr.SourceBranch,
 			Kind:   session.KindMR,
 			Mode:   mode,
 		}
-		guess = projectOf(mr.References.Full)
+		guess = mr.Project()
 		return sess, guess, false
 	}
 	is := *it.issue
@@ -159,7 +159,7 @@ func (m Model) newSessionFromItem(it *focusItem) (sess session.Session, guess st
 	if m.gl != nil {
 		for _, mr := range m.gl.OpenMRs {
 			if mr.JiraKey() == is.Key {
-				guess = projectOf(mr.References.Full)
+				guess = mr.Project()
 				break
 			}
 		}
@@ -177,19 +177,6 @@ func (m Model) ownsMR(mr gitlab.MR) bool {
 		}
 	}
 	return false
-}
-
-// projectOf extrai o nome do projeto da ref completa do MR
-// ("Roteamento/hades!9470" → "hades").
-func projectOf(fullRef string) string {
-	ref := fullRef
-	if i := strings.Index(ref, "!"); i >= 0 {
-		ref = ref[:i]
-	}
-	if i := strings.LastIndex(ref, "/"); i >= 0 {
-		ref = ref[i+1:]
-	}
-	return ref
 }
 
 // startSession inicia o fluxo da tecla 'c': monta a sessão, muda para a
@@ -585,7 +572,7 @@ type mrRef struct {
 }
 
 func newMRRef(mr gitlab.MR) *mrRef {
-	return &mrRef{projectID: mr.ProjectID, iid: mr.IID, ref: shortRef(mr), desc: mr.Description}
+	return &mrRef{projectID: mr.ProjectID, iid: mr.IID, ref: mr.ShortRef(), desc: mr.Description}
 }
 
 // mrFor acha o MR da sessão: pela ref exata (sessão de MR, mesmo já
@@ -597,7 +584,7 @@ func (m Model) mrFor(sess session.Session) *mrRef {
 	}
 	all := m.myMRs()
 	for i := range all {
-		if shortRef(all[i]) == sess.Key {
+		if all[i].ShortRef() == sess.Key {
 			return newMRRef(all[i])
 		}
 	}
@@ -609,7 +596,7 @@ func (m Model) mrFor(sess session.Session) *mrRef {
 		if all[i].JiraKey() != sess.Key {
 			continue
 		}
-		if strings.EqualFold(projectOf(all[i].References.Full), sess.Service) {
+		if strings.EqualFold(all[i].Project(), sess.Service) {
 			return newMRRef(all[i])
 		}
 		if fallback == nil {

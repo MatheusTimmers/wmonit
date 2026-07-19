@@ -252,7 +252,7 @@ func resolvedLine(is jira.Issue) string {
 // matchMR e matchIssue testam se o item bate com a busca (q já minúsculo).
 func matchMR(mr gitlab.MR, q string) bool {
 	return strings.Contains(strings.ToLower(mr.Title), q) ||
-		strings.Contains(strings.ToLower(shortRef(mr)), q) ||
+		strings.Contains(strings.ToLower(mr.ShortRef()), q) ||
 		strings.Contains(strings.ToLower(mr.JiraKey()), q)
 }
 

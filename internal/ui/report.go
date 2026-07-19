@@ -76,7 +76,7 @@ func (m Model) writeMRSection(b *strings.Builder, title string, mrs func() []git
 			b.WriteString(dim.Render("  nenhum") + "\n")
 		}
 		for _, mr := range list {
-			line := "  " + dim.Render(shortRef(mr)) + " " + mr.ShortTitle()
+			line := "  " + dim.Render(mr.ShortRef()) + " " + mr.ShortTitle()
 			if k := mr.JiraKey(); k != "" {
 				line += dim.Render(" #" + k)
 			}

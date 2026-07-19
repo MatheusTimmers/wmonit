@@ -296,18 +296,6 @@ func (m Model) footer(vp interface{ ScrollPercent() float64 }) string {
 	return dim.Render(" " + help + "   " + status)
 }
 
-// shortRef encurta a referência do MR ("Roteamento/hades!9470" → "hades!9470").
-func shortRef(mr gitlab.MR) string {
-	ref := mr.References.Full
-	if ref == "" {
-		return fmt.Sprintf("!%d", mr.IID)
-	}
-	if i := strings.LastIndex(ref, "/"); i >= 0 {
-		ref = ref[i+1:]
-	}
-	return ref
-}
-
 // prioBadge destaca prioridades fora do comum; as medianas ficam ocultas.
 func prioBadge(p string) string {
 	l := strings.ToLower(p)
@@ -376,7 +364,7 @@ func (m Model) viewHoje() string {
 	default:
 		b.WriteString(section.Render(fmt.Sprintf("⏳ Reviews aguardando você (%d)", len(m.gl.ReviewPending))) + "\n")
 		for _, mr := range m.gl.ReviewPending {
-			line := "  " + dim.Render(shortRef(mr)) + " " + mr.ShortTitle()
+			line := "  " + dim.Render(mr.ShortRef()) + " " + mr.ShortTitle()
 			if k := mr.JiraKey(); k != "" {
 				line += dim.Render(" #" + k)
 			}
@@ -772,7 +760,7 @@ func (m Model) viewDesempenho() string {
 }
 
 func renderMR(mr gitlab.MR) string {
-	s := dim.Render(shortRef(mr)) + " " + mr.ShortTitle()
+	s := dim.Render(mr.ShortRef()) + " " + mr.ShortTitle()
 	if k := mr.JiraKey(); k != "" {
 		s += " " + warnStyle.Render("#"+k)
 	}

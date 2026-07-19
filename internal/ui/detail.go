@@ -16,7 +16,7 @@ func (m Model) openDetail(it *focusItem) (tea.Model, tea.Cmd) {
 	m.detailBody = ""
 	m.detailURL = m.itemURL(it)
 	if it.mr != nil {
-		m.detailTitle = "MR " + shortRef(*it.mr)
+		m.detailTitle = "MR " + it.mr.ShortRef()
 	} else {
 		m.detailTitle = it.issue.Key
 	}

@@ -142,6 +142,31 @@ func (mr MR) ShortTitle() string {
 	return strings.Join(strings.Fields(t), " ")
 }
 
+// ShortRef encurta a referência do MR ("Roteamento/hades!9470" → "hades!9470").
+func (mr MR) ShortRef() string {
+	ref := mr.References.Full
+	if ref == "" {
+		return fmt.Sprintf("!%d", mr.IID)
+	}
+	if i := strings.LastIndex(ref, "/"); i >= 0 {
+		ref = ref[i+1:]
+	}
+	return ref
+}
+
+// Project extrai o nome do projeto da referência do MR
+// ("Roteamento/hades!9470" → "hades").
+func (mr MR) Project() string {
+	ref := mr.References.Full
+	if i := strings.Index(ref, "!"); i >= 0 {
+		ref = ref[:i]
+	}
+	if i := strings.LastIndex(ref, "/"); i >= 0 {
+		ref = ref[i+1:]
+	}
+	return ref
+}
+
 // getResp faz o GET e devolve a resposta com o body aberto (status já
 // validado) — a paginação precisa dos headers além do corpo.
 func (c *Client) getResp(ctx context.Context, path string, q url.Values) (*http.Response, error) {
