@@ -1,70 +1,98 @@
 package tasks
 
 import (
-	"encoding/json"
-	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/timmers/wmonit/internal/paths"
+	"github.com/timmers/wmonit/internal/store"
+)
+
+const (
+	PriorityLow      = "low"
+	PriorityMedium   = "medium"
+	PriorityHigh     = "high"
+	PriorityCritical = "critical"
 )
 
 type Task struct {
-	Text    string     `json:"text"`
-	Due     string     `json:"due,omitempty"`      // YYYY-MM-DD
-	DueTime string     `json:"due_time,omitempty"` // HH:MM, hora do lembrete (opcional)
-	Done    bool       `json:"done"`
-	Created time.Time  `json:"created"`
-	DoneAt  *time.Time `json:"done_at,omitempty"` // quando foi concluída
+	Text     string     `json:"text"`
+	Due      string     `json:"due,omitempty"`      // YYYY-MM-DD
+	DueTime  string     `json:"due_time,omitempty"` // HH:MM, hora do lembrete (opcional)
+	Priority string     `json:"priority,omitempty"` // low/medium/high/critical
+	Done     bool       `json:"done"`
+	Created  time.Time  `json:"created"`
+	DoneAt   *time.Time `json:"done_at,omitempty"` // quando foi concluída
+}
+
+func (t Task) Urgent() bool {
+	return t.Priority == PriorityHigh || t.Priority == PriorityCritical
 }
 
 type Store struct {
-	path  string
+	js    store.JSON[[]Task]
 	Tasks []Task
 }
 
-func storePath() string {
-	if dir := os.Getenv("XDG_DATA_HOME"); dir != "" {
-		return filepath.Join(dir, "wmonit", "tasks.json")
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", "wmonit", "tasks.json")
-}
-
 func Load() (*Store, error) {
-	s := &Store{path: storePath()}
-	data, err := os.ReadFile(s.path)
-
-	if errors.Is(err, os.ErrNotExist) {
-		return s, nil
-	}
-
+	js := store.JSON[[]Task]{Path: paths.DataFile("tasks.json")}
+	tasks, err := js.Load()
 	if err != nil {
 		return nil, err
 	}
-
-	if err := json.Unmarshal(data, &s.Tasks); err != nil {
-		return nil, fmt.Errorf("lendo %s: %w", s.path, err)
-	}
-	return s, nil
+	return &Store{js: js, Tasks: tasks}, nil
 }
 
-func (s *Store) Save() error {
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
-		return err
-	}
+func (s *Store) Save() error { return s.js.Save(s.Tasks) }
 
-	data, err := json.MarshalIndent(s.Tasks, "", "  ")
+// Add registra a tarefa. Devolve erro quando o vencimento digitado é
+// claramente inválido (ver parseDue), para o chamador avisar em vez de
+// gravar uma tarefa sem o horário que o usuário pediu.
+func (s *Store) Add(input string) error {
+	rest, priority := parsePriority(input)
+	text, due, dueTime, err := parseDue(rest)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.path, data, 0o644)
+	s.Tasks = append(s.Tasks, Task{Text: text, Due: due, DueTime: dueTime, Priority: priority, Created: time.Now()})
+	return nil
 }
 
-func (s *Store) Add(input string) {
-	text, due, dueTime := parseDue(input)
-	s.Tasks = append(s.Tasks, Task{Text: text, Due: due, DueTime: dueTime, Created: time.Now()})
+// TODO: Faz sentido isso aqui
+var priorityAliases = map[string]string{
+	"critica":  PriorityCritical,
+	"crítica":  PriorityCritical,
+	"critical": PriorityCritical,
+	"crit":     PriorityCritical,
+	"alta":     PriorityHigh,
+	"high":     PriorityHigh,
+	"alt":      PriorityHigh,
+	"media":    PriorityMedium,
+	"média":    PriorityMedium,
+	"medium":   PriorityMedium,
+	"med":      PriorityMedium,
+	"normal":   PriorityMedium,
+	"baixa":    PriorityLow,
+	"low":      PriorityLow,
+}
+
+func parsePriority(input string) (rest, priority string) {
+	fields := strings.Fields(input)
+	out := fields[:0]
+	for _, f := range fields {
+		if strings.HasPrefix(f, "!") && len(f) > 1 {
+			if p, ok := priorityAliases[strings.ToLower(f[1:])]; ok {
+				priority = p
+				continue
+			}
+		}
+		out = append(out, f)
+	}
+	if priority == "" {
+		return input, ""
+	}
+	return strings.Join(out, " "), priority
 }
 
 func (s *Store) ToggleAt(i int) {
@@ -85,17 +113,22 @@ func (s *Store) DeleteAt(i int) {
 	}
 }
 
-func parseDue(input string) (text, due, dueTime string) {
+// parseDue extrai o vencimento de uma tag "@data [hora]" no fim do texto.
+// O "@" é ambíguo (e-mails como "time@nelogica", menções), então uma tag que
+// não vira data volta como texto comum, sem erro — preservar o "@..." já
+// sinaliza ao usuário que não foi agendada. O único caso inequívoco de
+// engano é data válida com hora inválida ("@today 99:99"): aí devolve erro,
+// porque a intenção de agendar com horário é clara.
+func parseDue(input string) (text, due, dueTime string, err error) {
 	text = strings.TrimSpace(input)
 	idx := strings.LastIndex(text, "@")
 	if idx < 0 {
-		return text, "", ""
+		return text, "", "", nil
 	}
 
 	fields := strings.Fields(text[idx+1:])
 	if len(fields) == 0 || len(fields) > 2 {
-		return text, "", ""
-		// TODO: Retornar error
+		return text, "", "", nil
 	}
 
 	today := time.Now()
@@ -110,21 +143,20 @@ func parseDue(input string) (text, due, dueTime string) {
 		}
 	}
 	if due == "" {
-		return text, "", "" // não era uma tag de data válida
-		// TODO: Return error
+		return text, "", "", nil
 	}
 
 	if len(fields) == 2 {
-		t, err := time.Parse("15:04", fields[1])
-		if err != nil {
-			return text, "", "" // "@today qualquer-coisa" não é uma tag
+		t, e := time.Parse("15:04", fields[1])
+		if e != nil {
+			return text, "", "", fmt.Errorf("hora inválida %q — use HH:MM (ex.: @%s 15:00)", fields[1], fields[0])
 		}
 		dueTime = t.Format("15:04")
 	}
 
 	rest := strings.TrimSpace(text[:idx])
 	if rest == "" {
-		return text, "", "" // só a tag, sem descrição — não vira vencimento
+		return text, "", "", nil
 	}
-	return rest, due, dueTime
+	return rest, due, dueTime, nil
 }

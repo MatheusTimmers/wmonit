@@ -4,12 +4,10 @@
 package history
 
 import (
-	"encoding/json"
-	"errors"
-	"fmt"
-	"os"
-	"path/filepath"
 	"time"
+
+	"github.com/timmers/wmonit/internal/paths"
+	"github.com/timmers/wmonit/internal/store"
 )
 
 // Day é o resumo de um dia: quantidade de MRs mergeados, issues resolvidas
@@ -22,43 +20,20 @@ type Day struct {
 }
 
 type Store struct {
-	path string
+	js   store.JSON[[]Day]
 	Days []Day
 }
 
-func storePath() string {
-	if dir := os.Getenv("XDG_DATA_HOME"); dir != "" {
-		return filepath.Join(dir, "wmonit", "history.json")
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", "wmonit", "history.json")
-}
-
 func Load() (*Store, error) {
-	s := &Store{path: storePath()}
-	data, err := os.ReadFile(s.path)
-	if errors.Is(err, os.ErrNotExist) {
-		return s, nil
-	}
+	js := store.JSON[[]Day]{Path: paths.DataFile("history.json")}
+	days, err := js.Load()
 	if err != nil {
 		return nil, err
 	}
-	if err := json.Unmarshal(data, &s.Days); err != nil {
-		return nil, fmt.Errorf("lendo %s: %w", s.path, err)
-	}
-	return s, nil
+	return &Store{js: js, Days: days}, nil
 }
 
-func (s *Store) Save() error {
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(s.Days, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(s.path, data, 0o644)
-}
+func (s *Store) Save() error { return s.js.Save(s.Days) }
 
 // Upsert grava o resumo do dia, substituindo o registro existente da mesma
 // data (os números crescem ao longo do dia, então o último vale). Devolve

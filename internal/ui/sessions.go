@@ -219,7 +219,7 @@ func (m Model) startSession(it *focusItem) (tea.Model, tea.Cmd) {
 	m.cursor = 0
 	m.filter = ""
 	m.sessInfo = ""
-	m.describing = true
+	m.mode = modeDescribing
 	m.descInput.Reset()
 	m.descInput.Focus()
 	m.vp.GotoTop()
@@ -230,13 +230,13 @@ func (m Model) startSession(it *focusItem) (tea.Model, tea.Cmd) {
 func (m Model) updateDescribe(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
-		m.describing = false
+		m.mode = modeNormal
 		m.pending = nil
 		m.descInput.Blur()
 		m.sessInfo = dim.Render("sessão cancelada")
 		return m, nil
 	case "ctrl+d", "ctrl+s":
-		m.describing = false
+		m.mode = modeNormal
 		m.descInput.Blur()
 		if m.pending == nil {
 			return m, nil
@@ -297,7 +297,7 @@ func (m Model) continueSession() (tea.Model, tea.Cmd) {
 		}
 	}
 	// Sem dedução: o usuário escolhe na lista.
-	m.pickingService = true
+	m.mode = modePickingService
 	m.pickOptions = p.services
 	m.pickCursor = 0
 	return m, nil
@@ -327,12 +327,12 @@ func (m Model) updatePickService(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "q":
 		// Volta para o textbox sem perder a explicação digitada.
-		m.pickingService = false
 		if m.pending != nil {
-			m.describing = true
+			m.mode = modeDescribing
 			m.descInput.Focus()
 			return m, textarea.Blink
 		}
+		m.mode = modeNormal
 		return m, nil
 	case "j", "down":
 		if m.pickCursor < len(m.pickOptions)-1 {
@@ -346,7 +346,7 @@ func (m Model) updatePickService(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "enter":
 		p := m.pending
-		m.pickingService = false
+		m.mode = modeNormal
 		m.pending = nil
 		if p == nil {
 			return m, nil
@@ -471,7 +471,7 @@ func (m Model) removeSessionCmd(s session.Session, force bool) tea.Cmd {
 // openSessionDetail mostra o estado do pipeline no painel de detalhes:
 // veredito/resumo de cada fase e o conteúdo do plano (WMONIT_PLAN.md).
 func (m Model) openSessionDetail(s session.Session) (tea.Model, tea.Cmd) {
-	m.detail = true
+	m.mode = modeDetail
 	m.detailLoading = true
 	m.detailBody = ""
 	m.detailTitle = "sessão " + s.Key
@@ -521,7 +521,7 @@ func (m Model) openSessionDetail(s session.Session) (tea.Model, tea.Cmd) {
 
 // openDiff mostra o diff do worktree no painel de detalhes.
 func (m Model) openDiff(s session.Session) (tea.Model, tea.Cmd) {
-	m.detail = true
+	m.mode = modeDetail
 	m.detailLoading = true
 	m.detailBody = ""
 	m.detailTitle = "diff " + s.Key
@@ -625,9 +625,18 @@ func noteLines(notes []gitlab.Note) []string {
 	return out
 }
 
-// fetchTaskContext compõe o contexto completo da tarefa (Jira + GitLab).
-// Roda fora da UI; erros de rede degradam para o contexto parcial.
-func fetchTaskContext(cfg config.Config, sess session.Session, mr *mrRef) claude.TaskContext {
+// jiraDetail busca os detalhes da issue, tolerando client nulo (testes/demo).
+func jiraDetail(ji *jira.Client, key string) (*jira.IssueDetail, error) {
+	if ji == nil {
+		return nil, fmt.Errorf("jira não configurado")
+	}
+	return ji.IssueDetail(key)
+}
+
+// fetchTaskContext compõe o contexto completo da tarefa (Jira + GitLab),
+// reusando os clients do Model. Roda fora da UI; erros de rede degradam
+// para o contexto parcial.
+func fetchTaskContext(gl *gitlab.Client, ji *jira.Client, cfg config.Config, sess session.Session, mr *mrRef) claude.TaskContext {
 	isIssue := sess.IsIssue()
 	ctx := claude.TaskContext{
 		Key:       sess.Key,
@@ -638,13 +647,13 @@ func fetchTaskContext(cfg config.Config, sess session.Session, mr *mrRef) claude
 		HasBranch: !isIssue, // sessão de MR usa branch existente
 	}
 	var notes []string
-	if mr != nil {
-		raw, _ := gitlab.New(cfg.GitLab.URL, cfg.GitLab.Token).MRNotes(mr.projectID, mr.iid)
+	if mr != nil && gl != nil {
+		raw, _ := gl.MRNotes(mr.projectID, mr.iid)
 		notes = noteLines(raw)
 	}
 	if isIssue {
 		// Sessão de issue: descrição/comentários do Jira; o MR ligado vira contexto extra.
-		if det, err := jira.New(cfg.Jira.URL, cfg.Jira.Auth, cfg.Jira.Email, cfg.Jira.Token, cfg.Jira.ComplexityField).IssueDetail(sess.Key); err == nil {
+		if det, err := jiraDetail(ji, sess.Key); err == nil {
 			ctx.Description = det.Description
 			for _, c := range det.Comments {
 				ctx.Comments = append(ctx.Comments, c.Author+": "+c.Body)
@@ -677,65 +686,35 @@ func fetchTaskContext(cfg config.Config, sess session.Session, mr *mrRef) claude
 //	falhou → tenta a fase de novo (retomando a conversa, se houver)
 //	pronta → ciclo de correção: retoma o dev com o veredito do review
 func (m Model) startRun(s *session.Session) (tea.Model, tea.Cmd) {
-	if s.IsReview() {
-		// Revisão é uma fase única; não há plano, dev nem ciclo de correção
-		// (o MR é de outra pessoa).
-		switch s.Status {
-		case session.StatusPending:
-			return m.runPhase(s, session.PhaseReview, "")
-		case session.StatusFailed:
-			return m.runPhase(s, session.PhaseReview, s.ClaudeIDs[session.PhaseReview])
-		default:
+	act, ok := s.Plan()
+	if !ok {
+		switch {
+		case s.IsReview():
 			m.sessInfo = dim.Render("revisão concluída — enter vê o resultado · t pergunta mais · f conclui")
-			return m, nil
-		}
-	}
-	switch s.Status {
-	case session.StatusPending:
-		return m.runPhase(s, session.PhasePlan, "")
-	case session.StatusWaiting:
-		next := session.NextPhase(s.Phase)
-		if next == "" {
-			next = session.PhaseReview // não deveria acontecer; revisa de novo
-		}
-		return m.runPhase(s, next, "")
-	case session.StatusFailed:
-		phase := s.Phase
-		if phase == "" {
-			phase = session.PhasePlan
-		}
-		return m.runPhase(s, phase, s.ClaudeIDs[phase])
-	case session.StatusDone:
-		// Correção: retoma a conversa do DEV (a que pode editar código)
-		// levando o veredito do review.
-		devID := s.ClaudeIDs[session.PhaseDev]
-		if devID == "" {
-			devID = s.ClaudeID // sessões antigas: única conversa
-		}
-		if devID == "" {
+		case s.Status == session.StatusDone:
 			m.sessInfo = warnStyle.Render("sem conversa para retomar — use 't' para abrir o Claude interativo")
-			return m, nil
 		}
-		return m.runPhase(s, session.PhaseDev, devID)
+		return m, nil
 	}
-	return m, nil
+	return m.runPhase(s, act)
 }
 
-// runPhase dispara uma fase do pipeline em background. resumeID, se não
-// vazio, retoma aquela conversa do Claude em vez de começar do zero (com
-// prompt de correção quando há veredito do review).
-func (m Model) runPhase(s *session.Session, phase, resumeID string) (tea.Model, tea.Cmd) {
-	s.Phase = phase
+// runPhase dispara a Action do pipeline em background. Quando act tem
+// ResumeID, retoma aquela conversa do Claude em vez de começar do zero (com
+// prompt de correção quando act.UseFix).
+func (m Model) runPhase(s *session.Session, act session.Action) (tea.Model, tea.Cmd) {
+	s.Phase = act.Phase
 	s.Status = session.StatusRunning
 	s.Err = ""
 	s.Finished = nil
-	s.LogFile = filepath.Join(session.LogDir(), s.ID+"-"+phase+".jsonl")
+	s.LogFile = filepath.Join(session.LogDir(), s.ID+"-"+act.Phase+".jsonl")
 	m.sess.Save()
 	delete(m.progress, s.ID) // o painel não deve mostrar a fase anterior
-	m.sessInfo = dim.Render("rodando " + phaseLabel(phase, s.Mode) + " de " + s.Key + "…")
+	m.sessInfo = dim.Render("rodando " + phaseLabel(act.Phase, s.Mode) + " de " + s.Key + "…")
 
 	cfg := m.cfg
 	sess := *s
+	gl, ji := m.glClient, m.jiClient
 	verdict := s.Results[session.PhaseReview]
 	cached := m.taskCtx[s.ID] // contexto já buscado numa fase anterior
 	var mr *mrRef
@@ -746,28 +725,28 @@ func (m Model) runPhase(s *session.Session, phase, resumeID string) (tea.Model, 
 		Bin:            cfg.Claude.Bin,
 		Dir:            sess.Worktree,
 		LogFile:        sess.LogFile,
-		Model:          cfg.Claude.Models[phase],
+		Model:          cfg.Claude.Models[act.Phase],
 		PermissionMode: cfg.Claude.PermissionMode,
 	}
 	h := &claude.Handle{}
 	m.handles[s.ID] = h
 	run := func() tea.Msg {
-		if resumeID != "" {
-			if phase == session.PhaseDev && verdict != "" {
+		if act.ResumeID != "" {
+			if act.UseFix {
 				opts.Prompt = claude.FixPrompt(verdict)
 			} else {
 				opts.Prompt = claude.ResumePrompt()
 			}
-			opts.Resume = resumeID
+			opts.Resume = act.ResumeID
 			err := claude.Run(opts, h)
 			return sessFinishedMsg{id: sess.ID, prompt: opts.Prompt, err: err}
 		}
 		ctx := cached
 		if ctx == nil {
-			c := fetchTaskContext(cfg, sess, mr)
+			c := fetchTaskContext(gl, ji, cfg, sess, mr)
 			ctx = &c
 		}
-		switch phase {
+		switch act.Phase {
 		case session.PhaseDev:
 			opts.Prompt = claude.DevPrompt(*ctx)
 		case session.PhaseReview:

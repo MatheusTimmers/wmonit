@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/BurntSushi/toml"
 )
@@ -14,12 +15,12 @@ type GitLab struct {
 }
 
 type Jira struct {
-	URL   string `toml:"url"`
-	Auth  string `toml:"auth"` // "bearer" (Server/DC com PAT) ou "basic" (Cloud com email+token)
-	Email string `toml:"email"`
-	Token string `toml:"token"`
-	StatusOrder []string `toml:"status_order"`
-	ComplexityField string `toml:"complexity_field"`
+	URL             string   `toml:"url"`
+	Auth            string   `toml:"auth"` // "bearer" (Server/DC com PAT) ou "basic" (Cloud com email+token)
+	Email           string   `toml:"email"`
+	Token           string   `toml:"token"`
+	StatusOrder     []string `toml:"status_order"`
+	ComplexityField string   `toml:"complexity_field"`
 }
 
 // TODO: mudar para tasks finalizadas e mr abertos
@@ -29,13 +30,13 @@ type Goals struct {
 }
 
 type Claude struct {
-	SourcesDir string `toml:"sources_dir"`
-	WorktreesDir string `toml:"worktrees_dir"`
-	Bin string `toml:"bin"`
-	BranchPrefix string `toml:"branch_prefix"`
-	Templates map[string]string `toml:"templates"` // TODO: Seria legal adicionar de forma geral tbm
-	Models map[string]string `toml:"models"`
-	PermissionMode string `toml:"permission_mode"`
+	SourcesDir     string            `toml:"sources_dir"`
+	WorktreesDir   string            `toml:"worktrees_dir"`
+	Bin            string            `toml:"bin"`
+	BranchPrefix   string            `toml:"branch_prefix"`
+	Templates      map[string]string `toml:"templates"` // TODO: Seria legal adicionar de forma geral tbm
+	Models         map[string]string `toml:"models"`
+	PermissionMode string            `toml:"permission_mode"`
 }
 
 type Config struct {
@@ -43,6 +44,17 @@ type Config struct {
 	Jira   Jira   `toml:"jira"`
 	Goals  Goals  `toml:"goals"`
 	Claude Claude `toml:"claude"`
+}
+
+// defaultSourcesDir é o diretório-raiz dos repositórios quando o config não
+// define sources_dir. No Windows mantém c:/Fontes (setup de trabalho); nos
+// demais SOs cai em ~/Projects, já que o caminho do Windows não existe lá.
+func defaultSourcesDir() string {
+	if runtime.GOOS == "windows" {
+		return "c:/Fontes"
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, "Projects")
 }
 
 func Path() string {
@@ -77,7 +89,7 @@ func Load() (Config, error) {
 		cfg.Jira.Auth = "bearer"
 	}
 	if cfg.Claude.SourcesDir == "" {
-		cfg.Claude.SourcesDir = "c:/Fontes"
+		cfg.Claude.SourcesDir = defaultSourcesDir()
 	}
 	if cfg.Claude.WorktreesDir == "" {
 		cfg.Claude.WorktreesDir = filepath.Join(cfg.Claude.SourcesDir, ".worktrees")

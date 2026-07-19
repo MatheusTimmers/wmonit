@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -17,6 +18,14 @@ type Client struct {
 	token   string
 	cxField string // campo de complexidade; vazio = descobrir pela API
 	http    *http.Client
+
+	// Metadados estáticos do Jira (campos e prioridades) memoizados: não
+	// mudam entre refreshes, então cada Fetch reaproveita. mu protege o
+	// cache contra refreshes concorrentes sobre o mesmo Client.
+	mu          sync.Mutex
+	cxResolved  string         // campo de complexidade já descoberto
+	cxDone      bool           // descoberta já tentada com sucesso
+	priosCached map[string]int // nil = ainda não resolvido (ou último erro)
 }
 
 func New(base, auth, email, token, cxField string) *Client {
@@ -240,8 +249,14 @@ func (c *Client) search(jql string, max int, cxField string, prios map[string]in
 // resolvePriorities mapeia o id da prioridade para a posição na ordem
 // oficial (mais urgente primeiro), via /rest/api/2/priority — ids de
 // prioridades customizadas (10000+) não têm ordem numérica confiável.
-// Em erro devolve nil e o chamador cai no id numérico.
+// Memoizado entre refreshes; em erro devolve nil (o chamador cai no id
+// numérico) e tenta de novo no próximo refresh.
 func (c *Client) resolvePriorities() map[string]int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.priosCached != nil {
+		return c.priosCached
+	}
 	var ps []struct {
 		ID string `json:"id"`
 	}
@@ -252,14 +267,22 @@ func (c *Client) resolvePriorities() map[string]int {
 	for i, p := range ps {
 		m[p.ID] = i
 	}
+	c.priosCached = m
 	return m
 }
 
 // resolveCXField devolve o id do campo de complexidade: o configurado, ou
 // o primeiro campo cujo nome contenha "complex" (Complexidade, Complexity…).
+// A descoberta (que baixa o catálogo de campos) é memoizada; só um erro de
+// rede faz repetir no próximo refresh.
 func (c *Client) resolveCXField() string {
 	if c.cxField != "" {
 		return c.cxField
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.cxDone {
+		return c.cxResolved
 	}
 	var fields []struct {
 		ID   string `json:"id"`
@@ -270,10 +293,12 @@ func (c *Client) resolveCXField() string {
 	}
 	for _, f := range fields {
 		if strings.Contains(strings.ToLower(f.Name), "complex") {
-			return f.ID
+			c.cxResolved = f.ID
+			break
 		}
 	}
-	return ""
+	c.cxDone = true
+	return c.cxResolved
 }
 
 type IssueDetail struct {

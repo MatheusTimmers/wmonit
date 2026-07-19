@@ -1,17 +1,13 @@
-// Package session persiste as sessões de trabalho do Claude Code: cada
-// sessão referencia uma task (issue Jira ou MR), um worktree isolado e o
-// estado da execução. Mesmo padrão de armazenamento de tasks/history.
 package session
 
 import (
-	"encoding/json"
-	"errors"
-	"fmt"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/timmers/wmonit/internal/paths"
+	"github.com/timmers/wmonit/internal/store"
 )
 
 type Status string
@@ -26,28 +22,22 @@ const (
 	StatusCancelled Status = "cancelled" // cancelada pelo usuário
 )
 
-// Tipos de origem da sessão.
 const (
 	KindIssue = "issue" // issue do Jira (branch nova)
 	KindMR    = "mr"    // merge request existente
 )
 
-// Modos de trabalho da sessão. Implement roda o pipeline completo
-// (plan → dev → review); Review só revisa um MR de outra pessoa e reporta,
-// sem mexer no código — nem todo trabalho é desenvolvimento.
 const (
 	ModeImplement = "implement" // default; pipeline plan → dev → review
 	ModeReview    = "review"    // só revisa o MR e reporta (1 fase)
 )
 
-// Fases do pipeline de agents de uma sessão.
 const (
 	PhasePlan   = "plan"   // agente 1: compila a tarefa e escreve o plano
 	PhaseDev    = "dev"    // agente 2: implementa seguindo o plano
 	PhaseReview = "review" // agente 3: revisa e reporta
 )
 
-// NextPhase devolve a fase seguinte do pipeline, ou "" quando acabou.
 func NextPhase(p string) string {
 	switch p {
 	case PhasePlan:
@@ -115,6 +105,60 @@ func (s *Session) SetResult(phase, result string) {
 // pessoa), em vez do pipeline de desenvolvimento.
 func (s Session) IsReview() bool { return s.Mode == ModeReview }
 
+// Action descreve o que rodar a seguir no pipeline.
+type Action struct {
+	Phase    string // fase a executar
+	ResumeID string // session_id do Claude a retomar; vazio = fase nova
+	UseFix   bool   // prompt de correção (dev com o veredito) em vez de resume simples
+}
+
+// Plan decide a próxima ação da sessão a partir do estado atual, sem tocar
+// na UI nem na rede — é a máquina de estados do pipeline, testável sozinha.
+// ok=false quando não há o que rodar: revisão já concluída, ou correção sem
+// conversa do dev para retomar.
+func (s Session) Plan() (Action, bool) {
+	verdict := s.Results[PhaseReview]
+	if s.IsReview() {
+		// Revisão é fase única: sem plano, dev nem ciclo de correção.
+		switch s.Status {
+		case StatusPending:
+			return Action{Phase: PhaseReview}, true
+		case StatusFailed:
+			return Action{Phase: PhaseReview, ResumeID: s.ClaudeIDs[PhaseReview]}, true
+		}
+		return Action{}, false
+	}
+	switch s.Status {
+	case StatusPending:
+		return Action{Phase: PhasePlan}, true
+	case StatusWaiting:
+		next := NextPhase(s.Phase)
+		if next == "" {
+			next = PhaseReview // não deveria acontecer; revisa de novo
+		}
+		return Action{Phase: next}, true
+	case StatusFailed:
+		phase := s.Phase
+		if phase == "" {
+			phase = PhasePlan
+		}
+		// Retomar o dev depois de um review já feito leva o prompt de correção.
+		return Action{Phase: phase, ResumeID: s.ClaudeIDs[phase], UseFix: phase == PhaseDev && verdict != ""}, true
+	case StatusDone:
+		// Correção: retoma a conversa do DEV (a que pode editar código)
+		// levando o veredito do review.
+		devID := s.ClaudeIDs[PhaseDev]
+		if devID == "" {
+			devID = s.ClaudeID // sessões antigas: conversa única
+		}
+		if devID == "" {
+			return Action{}, false
+		}
+		return Action{Phase: PhaseDev, ResumeID: devID, UseFix: verdict != ""}, true
+	}
+	return Action{}, false
+}
+
 // IsIssue informa se a sessão veio de uma issue do Jira; sessões antigas
 // (sem Kind) caem no formato da chave.
 func (s Session) IsIssue() bool {
@@ -127,50 +171,22 @@ func (s Session) IsIssue() bool {
 var jiraKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]*-\d+$`)
 
 type Store struct {
-	path     string
+	js       store.JSON[[]Session]
 	Sessions []Session
 }
 
-func dataDir() string {
-	if dir := os.Getenv("XDG_DATA_HOME"); dir != "" {
-		return filepath.Join(dir, "wmonit")
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".local", "share", "wmonit")
-}
-
-func storePath() string { return filepath.Join(dataDir(), "sessions.json") }
-
 // LogDir é onde ficam os logs stream-json das execuções.
-func LogDir() string { return filepath.Join(dataDir(), "logs") }
+func LogDir() string { return filepath.Join(paths.DataDir(), "logs") }
 
 // Load lê o sessions.json. Mesmo em erro devolve um store utilizável
 // (vazio), para o app seguir funcionando sem as sessões antigas.
 func Load() (*Store, error) {
-	s := &Store{path: storePath()}
-	data, err := os.ReadFile(s.path)
-	if errors.Is(err, os.ErrNotExist) {
-		return s, nil
-	}
-	if err != nil {
-		return s, err
-	}
-	if err := json.Unmarshal(data, &s.Sessions); err != nil {
-		return s, fmt.Errorf("lendo %s: %w", s.path, err)
-	}
-	return s, nil
+	js := store.JSON[[]Session]{Path: paths.DataFile("sessions.json")}
+	sessions, err := js.Load()
+	return &Store{js: js, Sessions: sessions}, err
 }
 
-func (s *Store) Save() error {
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(s.Sessions, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(s.path, data, 0o644)
-}
+func (s *Store) Save() error { return s.js.Save(s.Sessions) }
 
 // NewID gera um id único e legível a partir da chave da task.
 func NewID(key string) string {

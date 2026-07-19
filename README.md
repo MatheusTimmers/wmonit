@@ -10,6 +10,22 @@ tarefas manuais.
 go build -o wmonit .
 ```
 
+## Modo demo (sem GitLab/Jira)
+
+Para ver as telas e testar a interface sem nenhuma conexão, rode com dados
+inventados:
+
+```sh
+./wmonit --demo      # ou: WMONIT_DEMO=1 ./wmonit
+```
+
+O modo demo preenche GitLab e Jira com dados fictícios (MRs, fila de review,
+issues e métricas) e semeia algumas tarefas e sessões — inclusive uma tarefa
+**crítica** já vencida, para você ver o alerta constante em ação. Nada é
+buscado na rede e seus dados reais não são tocados (as tarefas e sessões do
+demo ficam numa pasta temporária). O rodapé mostra **🧪 DEMO** enquanto está
+ativo.
+
 ## Configuração
 
 Copie o exemplo e preencha URLs e tokens:
@@ -83,6 +99,12 @@ define a data de vencimento — tarefas vencendo aparecem na aba **Hoje**. Um
 horário opcional logo após a data (ex.: `@today 15:00`) vira um **lembrete**:
 ao chegar a hora, o wmonit dispara uma **notificação de desktop** (toast no
 Windows, notify-send no Linux).
+
+Um marcador `!alta`, `!critica`, `!media` ou `!baixa` (em qualquer posição do
+texto) define a **prioridade** — exibida como selo na lista. Tarefas de
+prioridade **alta ou crítica** com horário recebem **alertas constantes**: a
+partir da hora marcada, o wmonit re-notifica a cada verificação (a cada 30s)
+até você marcar a tarefa como concluída, em vez do aviso único das demais.
 
 Itens que pedem atenção — vencendo hoje/atrasados e reviews aguardando você —
 aparecem num **realce no topo** da tela enquanto existirem.
