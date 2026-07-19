@@ -184,6 +184,9 @@ func (m Model) View() string {
 // content gera o texto da aba ativa; é usado tanto para desenhar quanto
 // para alimentar o viewport do modelo (sem isso a rolagem não tem altura).
 func (m Model) content() string {
+	if m.describing {
+		return m.viewDescribe()
+	}
 	if m.pickingService {
 		return m.viewPickService()
 	}
@@ -251,7 +254,9 @@ func (m Model) footer(vp interface{ ScrollPercent() float64 }) string {
 		return dim.Render(" buscar: ") + m.filterInput.View() + dim.Render("  (enter aplica · esc limpa)")
 	}
 	help := "tab/1-6 abas · g relatório do dia · j/k rolar · r atualizar · q sair"
-	if m.pickingService {
+	if m.describing {
+		help = "ctrl+d inicia o pipeline · esc cancela"
+	} else if m.pickingService {
 		help = "j/k escolher serviço · enter confirmar · esc cancelar"
 	} else if m.detail {
 		help = "esc/q voltar · o abrir no navegador · j/k rolar"

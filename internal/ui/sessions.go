@@ -8,9 +8,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/timmers/wmonit/internal/claude"
+	"github.com/timmers/wmonit/internal/config"
+	"github.com/timmers/wmonit/internal/gitlab"
 	"github.com/timmers/wmonit/internal/jira"
 	"github.com/timmers/wmonit/internal/session"
 	"github.com/timmers/wmonit/internal/worktree"
@@ -93,11 +96,12 @@ type sessActionMsg struct {
 	err    error
 }
 
-// pendingSession guarda o que falta decidir (serviço) entre apertar 'c'
-// e a escolha na lista de serviços.
+// pendingSession guarda o que falta decidir (explicação e serviço) entre
+// apertar 'c' e o início do pipeline.
 type pendingSession struct {
 	sess         session.Session
 	createBranch bool
+	guess        string // serviço deduzido da #TAG/projeto, se houver
 }
 
 // newSessionFromItem monta a sessão a partir do item selecionado e tenta
@@ -146,8 +150,8 @@ func projectOf(fullRef string) string {
 	return ref
 }
 
-// startSession inicia o fluxo da tecla 'c': monta a sessão e, se o
-// serviço não puder ser deduzido, abre a lista de escolha.
+// startSession inicia o fluxo da tecla 'c': monta a sessão, muda para a
+// aba Sessões e abre o textbox de explicação da tarefa.
 func (m Model) startSession(it *focusItem) (tea.Model, tea.Cmd) {
 	sess, guess, create := m.newSessionFromItem(it)
 	if sess.Branch == "" {
@@ -158,26 +162,81 @@ func (m Model) startSession(it *focusItem) (tea.Model, tea.Cmd) {
 		m.sessInfo = warnStyle.Render("já existe sessão ativa para " + sess.Key)
 		return m, nil
 	}
+	m.pending = &pendingSession{sess: sess, createBranch: create, guess: guess}
+	m.tab = tabSessoes
+	m.cursor = 0
+	m.filter = ""
+	m.sessInfo = ""
+	m.describing = true
+	m.descInput.Reset()
+	m.descInput.Focus()
+	m.vp.GotoTop()
+	return m, textarea.Blink
+}
+
+// updateDescribe trata o textbox de explicação da tarefa.
+func (m Model) updateDescribe(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.describing = false
+		m.pending = nil
+		m.descInput.Blur()
+		m.sessInfo = dim.Render("sessão cancelada")
+		return m, nil
+	case "ctrl+d", "ctrl+s":
+		m.describing = false
+		m.descInput.Blur()
+		if m.pending == nil {
+			return m, nil
+		}
+		m.pending.sess.UserNote = strings.TrimSpace(m.descInput.Value())
+		return m.continueSession()
+	}
+	var cmd tea.Cmd
+	m.descInput, cmd = m.descInput.Update(msg)
+	return m, cmd
+}
+
+// viewDescribe desenha o textbox de explicação na aba Sessões.
+func (m Model) viewDescribe() string {
+	var b strings.Builder
+	key, title := "", ""
+	if m.pending != nil {
+		key, title = m.pending.sess.Key, m.pending.sess.Title
+	}
+	b.WriteString(section.Render("📝 Nova sessão — "+key) + " " + title + "\n\n")
+	b.WriteString(dim.Render("Explique a tarefa para o Claude; a descrição e os comentários da issue/MR entram junto no contexto.") + "\n\n")
+	b.WriteString(m.descInput.View() + "\n\n")
+	b.WriteString(dim.Render("ctrl+d inicia o pipeline (plan → dev → review) · esc cancela"))
+	return b.String()
+}
+
+// continueSession segue após a explicação: deduz o serviço ou abre a
+// lista de escolha; com serviço definido, cria o worktree.
+func (m Model) continueSession() (tea.Model, tea.Cmd) {
+	p := m.pending
 	services, err := worktree.DetectServices(m.cfg.Claude.SourcesDir)
 	if err != nil {
+		m.pending = nil
 		m.sessInfo = errStyle.Render("lendo " + m.cfg.Claude.SourcesDir + ": " + err.Error())
 		return m, nil
 	}
 	if len(services) == 0 {
+		m.pending = nil
 		m.sessInfo = errStyle.Render("nenhum serviço (repo git) em " + m.cfg.Claude.SourcesDir)
 		return m, nil
 	}
 	for _, s := range services {
-		if strings.EqualFold(s, guess) {
-			sess.Service = s
-			return m.launchCreate(sess, create)
+		if strings.EqualFold(s, p.guess) {
+			p.sess.Service = s
+			m.pending = nil
+			return m.launchCreate(p.sess, p.createBranch)
 		}
 	}
 	// Sem dedução: o usuário escolhe na lista.
 	m.pickingService = true
 	m.pickOptions = services
 	m.pickCursor = 0
-	m.pending = &pendingSession{sess: sess, createBranch: create}
 	return m, nil
 }
 
@@ -382,52 +441,133 @@ func (m Model) cancelSession(s *session.Session) (tea.Model, tea.Cmd) {
 
 var jiraKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]*-\d+$`)
 
-// startRun marca a sessão como rodando e dispara a execução headless do
-// Claude no worktree. A descrição da task é buscada dentro do comando
-// (rede não pode bloquear a UI).
+// mrRef aponta o MR da sessão (ou ligado à issue pela #TAG), com o que já
+// está em memória — os comentários são buscados depois, fora da UI.
+type mrRef struct {
+	projectID, iid int
+	ref, desc      string
+}
+
+// mrFor acha o MR aberto da sessão: pela ref (sessão de MR) ou pela #TAG
+// no título (sessão de issue).
+func (m Model) mrFor(key string) *mrRef {
+	if m.gl == nil {
+		return nil
+	}
+	for _, mr := range m.gl.OpenMRs {
+		if shortRef(mr) == key || mr.JiraKey() == key {
+			return &mrRef{projectID: mr.ProjectID, iid: mr.IID, ref: shortRef(mr), desc: mr.Description}
+		}
+	}
+	return nil
+}
+
+// fetchTaskContext compõe o contexto completo da tarefa (Jira + GitLab).
+// Roda fora da UI; erros de rede degradam para o contexto parcial.
+func fetchTaskContext(cfg config.Config, sess session.Session, mr *mrRef) claude.TaskContext {
+	ctx := claude.TaskContext{
+		Key:       sess.Key,
+		Title:     sess.Title,
+		URL:       sess.URL,
+		UserNote:  sess.UserNote,
+		Template:  cfg.Claude.Templates[sess.Service],
+		HasBranch: !jiraKeyPattern.MatchString(sess.Key), // sessão de MR usa branch existente
+	}
+	var notes []gitlab.Note
+	if mr != nil {
+		notes, _ = gitlab.New(cfg.GitLab.URL, cfg.GitLab.Token).MRNotes(mr.projectID, mr.iid)
+	}
+	if jiraKeyPattern.MatchString(sess.Key) {
+		// Sessão de issue: descrição/comentários do Jira; o MR ligado vira contexto extra.
+		if det, err := jira.New(cfg.Jira.URL, cfg.Jira.Auth, cfg.Jira.Email, cfg.Jira.Token, cfg.Jira.ComplexityField).IssueDetail(sess.Key); err == nil {
+			ctx.Description = det.Description
+			for _, c := range det.Comments {
+				ctx.Comments = append(ctx.Comments, c.Author+": "+c.Body)
+			}
+		}
+		if mr != nil {
+			var b strings.Builder
+			b.WriteString(mr.ref)
+			if mr.desc != "" {
+				b.WriteString("\n" + mr.desc)
+			}
+			for _, n := range notes {
+				if !n.System {
+					b.WriteString("\n- " + n.Author.Name + ": " + strings.TrimSpace(n.Body))
+				}
+			}
+			ctx.MRInfo = b.String()
+		}
+	} else if mr != nil {
+		// Sessão do próprio MR: descrição e comentários do MR são a tarefa.
+		ctx.Description = mr.desc
+		for _, n := range notes {
+			if !n.System {
+				ctx.Comments = append(ctx.Comments, n.Author.Name+": "+strings.TrimSpace(n.Body))
+			}
+		}
+	}
+	return ctx
+}
+
+// startRun inicia o pipeline de agents (plan → dev → review) ou, se a
+// sessão já tem contexto do Claude, retoma de onde parou.
 func (m Model) startRun(s *session.Session) (tea.Model, tea.Cmd) {
+	if s.ClaudeID != "" {
+		return m.runPhase(s, s.Phase, true)
+	}
+	return m.runPhase(s, session.PhasePlan, false)
+}
+
+// runPhase dispara uma fase do pipeline em background. resume retoma a
+// sessão anterior do Claude em vez de montar o prompt da fase.
+func (m Model) runPhase(s *session.Session, phase string, resume bool) (tea.Model, tea.Cmd) {
+	s.Phase = phase
 	s.Status = session.StatusRunning
 	s.Err = ""
 	s.Finished = nil
-	s.LogFile = filepath.Join(session.LogDir(), s.ID+".jsonl")
+	s.LogFile = filepath.Join(session.LogDir(), s.ID+"-"+phase+".jsonl")
 	m.sess.Save()
-	m.sessInfo = dim.Render("rodando claude em " + s.Worktree + "…")
+	m.sessInfo = dim.Render("rodando " + phaseLabel(phase) + " de " + s.Key + "…")
 
 	cfg := m.cfg
 	sess := *s
-	// Para MR, a descrição já está em memória; para issue ela é buscada
-	// no Jira dentro do comando.
-	desc := ""
-	if !jiraKeyPattern.MatchString(sess.Key) && m.gl != nil {
-		for _, mr := range m.gl.OpenMRs {
-			if shortRef(mr) == sess.Key {
-				desc = mr.Description
-				break
-			}
-		}
-	}
+	mr := m.mrFor(sess.Key) // dados do GitLab já em memória; rede fica no closure
 	h := &claude.Handle{}
 	m.handles[s.ID] = h
-	tick := sessTick()
 	run := func() tea.Msg {
-		var prompt string
-		if sess.ClaudeID != "" {
-			// Retomada: o contexto já está na sessão do Claude.
+		var prompt, resumeID string
+		if resume {
 			prompt = "Continue a tarefa de onde parou, seguindo as instruções anteriores. Revise o estado atual do repositório antes de prosseguir."
+			resumeID = sess.ClaudeID
 		} else {
-			d := desc
-			if jiraKeyPattern.MatchString(sess.Key) {
-				det, err := jira.New(cfg.Jira.URL, cfg.Jira.Auth, cfg.Jira.Email, cfg.Jira.Token, cfg.Jira.ComplexityField).IssueDetail(sess.Key)
-				if err == nil {
-					d = det.Description
-				}
+			ctx := fetchTaskContext(cfg, sess, mr)
+			switch phase {
+			case session.PhaseDev:
+				prompt = claude.DevPrompt(ctx)
+			case session.PhaseReview:
+				prompt = claude.ReviewPrompt(ctx)
+			default:
+				prompt = claude.PlanPrompt(ctx)
 			}
-			prompt = claude.BuildPrompt(sess.Key, sess.Title, sess.URL, d, cfg.Claude.Templates[sess.Service])
 		}
-		err := claude.Run(cfg.Claude.Bin, sess.Worktree, prompt, sess.LogFile, sess.ClaudeID, h)
+		err := claude.Run(cfg.Claude.Bin, sess.Worktree, prompt, sess.LogFile, resumeID, h)
 		return sessFinishedMsg{id: sess.ID, prompt: prompt, err: err}
 	}
-	return m, tea.Batch(run, tick)
+	return m, tea.Batch(run, sessTick())
+}
+
+// phaseLabel descreve a fase do pipeline para a UI.
+func phaseLabel(p string) string {
+	switch p {
+	case session.PhasePlan:
+		return "plano 1/3"
+	case session.PhaseDev:
+		return "dev 2/3"
+	case session.PhaseReview:
+		return "review 3/3"
+	}
+	return ""
 }
 
 func statusLabel(s session.Status) string {
@@ -466,12 +606,15 @@ func (m Model) viewSessoes() string {
 		line := cursor + statusLabel(s.Status) + "  " + warnStyle.Render(s.Key) + " " + s.Title
 		b.WriteString(line + "\n")
 		meta := "    " + s.Service + " · " + s.Branch + " · " + s.Created.Format("02/01 15:04")
+		if pl := phaseLabel(s.Phase); pl != "" {
+			meta += " · " + pl
+		}
 		b.WriteString(dim.Render(meta) + "\n")
 		if s.Err != "" {
 			b.WriteString("    " + errStyle.Render(s.Err) + "\n")
 		}
 		if p, ok := m.progress[s.ID]; ok && s.Status == session.StatusRunning {
-			b.WriteString(dim.Render(fmt.Sprintf("    %s %d turnos", m.spin.View(), p.Turns)))
+			b.WriteString(dim.Render(fmt.Sprintf("    %s %s · %d turnos", m.spin.View(), phaseLabel(s.Phase), p.Turns)))
 			if len(p.Tools) > 0 {
 				b.WriteString(dim.Render(" · " + strings.Join(p.Tools, " → ")))
 			}

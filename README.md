@@ -108,20 +108,33 @@ A aba **Sessões** (tecla `6`) gerencia tarefas executadas pelo Claude Code
 em worktrees isolados — útil para trabalhar duas tarefas ao mesmo tempo no
 mesmo repositório.
 
-Nas abas GitLab/Jira, `c` cria uma sessão para o item selecionado: uma issue
-Jira ganha uma branch nova `feature/ABC-123`; um MR usa a branch existente.
-O serviço (repositório em `sources_dir`) é deduzido da `#TAG`/projeto do MR;
-se não der, você escolhe numa lista. O worktree é criado em
-`<worktrees_dir>/<id-da-sessão>`.
+Nas abas GitLab/Jira, `c` cria uma sessão para o item selecionado: a TUI
+muda para a aba Sessões e abre um textbox para você explicar a tarefa
+(`ctrl+d` confirma). Uma issue Jira ganha uma branch nova `feature/ABC-123`;
+um MR usa a branch existente. O serviço (repositório em `sources_dir`) é
+deduzido da `#TAG`/projeto do MR; se não der, você escolhe numa lista. O
+worktree é criado em `<worktrees_dir>/<id-da-sessão>` e o pipeline inicia
+automaticamente.
+
+Cada execução é um **pipeline de três agents** headless (`claude -p
+--output-format stream-json`), todos com o contexto completo da tarefa —
+sua explicação, descrição e comentários da issue no Jira, descrição e
+comentários do MR ligado, e o template do serviço (`[claude.templates]`):
+
+1. **plan** — explora o repositório (e o que já existe na branch, no caso
+   de MR) e grava o plano em `WMONIT_PLAN.md` na raiz do worktree.
+2. **dev** — implementa seguindo o plano, valida com build/testes e faz
+   commits (sem push).
+3. **review** — revisa o diff, roda build/testes e responde com um
+   veredito (APROVADO ou AJUSTES NECESSÁRIOS); não altera código.
+
+O progresso (fase, turnos, ferramentas, último texto) aparece ao vivo e uma
+notificação de desktop avisa quando o pipeline termina ou falha.
 
 Na aba Sessões:
 
-- `s`/`enter` — executa o Claude headless (`claude -p --output-format
-  stream-json`) no worktree, com prompt montado da descrição da task mais
-  as instruções do template do serviço (`[claude.templates]`). Em uma sessão
-  já concluída, retoma a conversa (`--resume`). O progresso (turnos,
-  ferramentas, último texto) aparece ao vivo e uma notificação de desktop
-  avisa quando termina.
+- `s`/`enter` — inicia o pipeline (sessão pendente/falhada) ou retoma a
+  conversa da última fase (`--resume`) em uma sessão já concluída.
 - `t` — abre o Claude **interativo** no worktree (a TUI volta ao sair).
 - `v` — mostra o diff do worktree · `e` — abre no editor (`$VISUAL`/VS Code).
 - `f` — conclui: remove o worktree (recusa se houver mudanças não

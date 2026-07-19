@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"sync"
 )
 
@@ -46,34 +45,6 @@ func (h *Handle) Killed() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.killed
-}
-
-// BuildPrompt monta o prompt da sessão a partir da task e do template do
-// serviço (instruções extras por repositório, do config).
-func BuildPrompt(key, title, url, description, template string) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "Você está trabalhando na tarefa %s: %s\n", key, title)
-	if url != "" {
-		fmt.Fprintf(&b, "Link: %s\n", url)
-	}
-	b.WriteString("\n")
-	if d := strings.TrimSpace(description); d != "" {
-		b.WriteString("Descrição da tarefa:\n")
-		b.WriteString(d)
-		b.WriteString("\n\n")
-	}
-	b.WriteString("Instruções:\n")
-	b.WriteString("- Implemente o que a tarefa pede neste repositório (você já está na branch correta).\n")
-	b.WriteString("- Siga as convenções do código existente.\n")
-	b.WriteString("- Rode build e testes para validar antes de terminar.\n")
-	b.WriteString("- Faça commits pequenos com mensagens claras; NÃO faça push.\n")
-	b.WriteString("- Ao final, resuma o que foi feito e o que ficou pendente.\n")
-	if t := strings.TrimSpace(template); t != "" {
-		b.WriteString("\nInstruções específicas deste serviço:\n")
-		b.WriteString(t)
-		b.WriteString("\n")
-	}
-	return b.String()
 }
 
 // Run executa o Claude Code em dir com o prompt, gravando stdout
