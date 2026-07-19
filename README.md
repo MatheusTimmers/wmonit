@@ -87,6 +87,17 @@ Windows, notify-send no Linux).
 Itens que pedem atenção — vencendo hoje/atrasados e reviews aguardando você —
 aparecem num **realce no topo** da tela enquanto existirem.
 
+A **fila de review** (na aba Hoje e na GitLab) lista os MRs aguardando seu
+review ordenados pelo tempo parado — o mais esquecido primeiro.
+
+Além dos lembretes de tarefa, o wmonit dispara **notificações de desktop
+proativas** a cada atualização: review pedido, menção/comentário, build
+quebrado e outras pendências do GitLab (via a lista de *todos*), além de
+issue nova atribuída a você ou mudança de status no Jira. A primeira leitura
+ao abrir o app só estabelece a linha de base — você só é avisado das
+novidades dali em diante. As mais recentes também aparecem num bloco
+**🔔 Novidades** na aba Hoje.
+
 As abas **GitLab** e **Jira** mostram quanto você produziu hoje, na semana e
 no mês; cada item é selecionável (`j`/`k`): `enter` abre um painel com a
 descrição, os comentários e os MRs ligados, `o` abre no navegador e `/`
@@ -110,7 +121,11 @@ mesmo repositório.
 
 Nas abas GitLab/Jira, `c` cria uma sessão para o item selecionado: a TUI
 muda para a aba Sessões e abre um textbox para você explicar a tarefa
-(`ctrl+d` confirma). Uma issue Jira ganha uma branch nova com o nome da
+(`ctrl+d` confirma). O **modo** é deduzido do item: seu MR ou uma issue →
+**desenvolvimento** (o pipeline abaixo); o MR de outra pessoa que aguarda
+seu review → **revisão**, em que o Claude só analisa o MR e te entrega um
+parecer, sem mexer no código. `ctrl+r` alterna os dois antes de iniciar.
+Uma issue Jira ganha uma branch nova com o nome da
 chave (`ABC-123`; defina `branch_prefix` em `[claude]` para algo como
 `feature/`), criada a partir do default do remoto (`origin/HEAD`)
 atualizado — se a branch já existir (sessão anterior da mesma issue), ela
@@ -134,6 +149,13 @@ comentários do MR ligado, e o template do serviço (`[claude.templates]`):
 Os agentes são instruídos a **não rodar build nem testes**: o worktree
 isolado não builda (submodules/dependências não resolvem nele), então a
 validação fica por sua conta depois do `f`/merge da branch.
+
+**Sessão de revisão** (modo revisão): em vez do pipeline, roda uma fase
+única que revisa o MR de outra pessoa — explora o diff contra a branch base,
+aponta bugs/riscos/desvios de convenção com `arquivo:linha` e fecha com uma
+recomendação (aprovar ou pedir ajustes) e comentários prontos para você colar
+no GitLab. Não há plan, dev nem ciclo de correção; ao terminar, `enter`
+mostra o parecer, `t` abre o Claude interativo para aprofundar e `f` conclui.
 
 **Cada fase tem um gate manual:** ao terminar, a sessão fica
 "⏸ aguardando aprovação" — `enter` mostra o resultado da fase (e o

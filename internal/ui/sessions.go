@@ -129,12 +129,19 @@ type pendingSession struct {
 func (m Model) newSessionFromItem(it *focusItem) (sess session.Session, guess string, createBranch bool) {
 	if it.mr != nil {
 		mr := *it.mr
+		// MR de outra pessoa (você é só revisor) → sessão de revisão; o seu
+		// próprio MR → pipeline de desenvolvimento. O usuário pode trocar.
+		mode := session.ModeImplement
+		if !m.ownsMR(mr) {
+			mode = session.ModeReview
+		}
 		sess = session.Session{
 			Key:    shortRef(mr),
 			Title:  mr.ShortTitle(),
 			URL:    mr.WebURL,
 			Branch: mr.SourceBranch,
 			Kind:   session.KindMR,
+			Mode:   mode,
 		}
 		guess = projectOf(mr.References.Full)
 		return sess, guess, false
@@ -157,6 +164,18 @@ func (m Model) newSessionFromItem(it *focusItem) (sess session.Session, guess st
 		}
 	}
 	return sess, guess, true
+}
+
+// ownsMR informa se o MR é de autoria do usuário (consta entre os meus) —
+// o que decide o modo padrão da sessão: desenvolvimento no seu, revisão no
+// dos outros.
+func (m Model) ownsMR(mr gitlab.MR) bool {
+	for _, x := range m.myMRs() {
+		if x.ProjectID == mr.ProjectID && x.IID == mr.IID {
+			return true
+		}
+	}
+	return false
 }
 
 // projectOf extrai o nome do projeto da ref completa do MR
@@ -224,6 +243,16 @@ func (m Model) updateDescribe(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.pending.sess.UserNote = strings.TrimSpace(m.descInput.Value())
 		return m.continueSession()
+	case "ctrl+r":
+		// Alterna entre desenvolvimento e revisão sem perder a explicação.
+		if m.pending != nil {
+			if m.pending.sess.IsReview() {
+				m.pending.sess.Mode = session.ModeImplement
+			} else {
+				m.pending.sess.Mode = session.ModeReview
+			}
+		}
+		return m, nil
 	}
 	var cmd tea.Cmd
 	m.descInput, cmd = m.descInput.Update(msg)
@@ -233,14 +262,26 @@ func (m Model) updateDescribe(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // viewDescribe desenha o textbox de explicação na aba Sessões.
 func (m Model) viewDescribe() string {
 	var b strings.Builder
-	key, title := "", ""
+	key, title, review := "", "", false
 	if m.pending != nil {
 		key, title = m.pending.sess.Key, m.pending.sess.Title
+		review = m.pending.sess.IsReview()
 	}
-	b.WriteString(section.Render("📝 Nova sessão — "+key) + " " + title + "\n\n")
-	b.WriteString(dim.Render("Explique a tarefa para o Claude; a descrição e os comentários da issue/MR entram junto no contexto.") + "\n\n")
+	head, mode, expl, start := "📝 Nova sessão — ",
+		okStyle.Render("desenvolvimento (plan → dev → review)"),
+		"Explique a tarefa para o Claude; a descrição e os comentários da issue/MR entram junto no contexto.",
+		"ctrl+d inicia o pipeline (plan → dev → review)"
+	if review {
+		head, mode, expl, start = "🔎 Nova revisão — ",
+			warnStyle.Render("revisão (só revisa o MR e reporta)"),
+			"Diga o que olhar com atenção na revisão (opcional); a descrição e os comentários do MR entram no contexto.",
+			"ctrl+d inicia a revisão"
+	}
+	b.WriteString(section.Render(head+key) + " " + title + "\n\n")
+	b.WriteString(dim.Render("modo: ") + mode + dim.Render("  (ctrl+r troca)") + "\n")
+	b.WriteString(dim.Render(expl) + "\n\n")
 	b.WriteString(m.descInput.View() + "\n\n")
-	b.WriteString(dim.Render("ctrl+d inicia o pipeline (plan → dev → review) · esc cancela"))
+	b.WriteString(dim.Render(start + " · ctrl+r troca o modo · esc cancela"))
 	return b.String()
 }
 
@@ -441,7 +482,10 @@ func (m Model) openSessionDetail(s session.Session) (tea.Model, tea.Cmd) {
 		var b strings.Builder
 		b.WriteString(statusLabel(s.Status) + "  " + warnStyle.Render(s.Key) + " " + s.Title + "\n")
 		meta := s.Service + " · " + s.Branch
-		if pl := phaseLabel(s.Phase); pl != "" {
+		if s.IsReview() {
+			meta += " · revisão de MR"
+		}
+		if pl := phaseLabel(s.Phase, s.Mode); pl != "" {
 			meta += " · fase " + pl
 		}
 		b.WriteString(dim.Render(meta) + "\n\n")
@@ -633,6 +677,19 @@ func fetchTaskContext(cfg config.Config, sess session.Session, mr *mrRef) claude
 //	falhou → tenta a fase de novo (retomando a conversa, se houver)
 //	pronta → ciclo de correção: retoma o dev com o veredito do review
 func (m Model) startRun(s *session.Session) (tea.Model, tea.Cmd) {
+	if s.IsReview() {
+		// Revisão é uma fase única; não há plano, dev nem ciclo de correção
+		// (o MR é de outra pessoa).
+		switch s.Status {
+		case session.StatusPending:
+			return m.runPhase(s, session.PhaseReview, "")
+		case session.StatusFailed:
+			return m.runPhase(s, session.PhaseReview, s.ClaudeIDs[session.PhaseReview])
+		default:
+			m.sessInfo = dim.Render("revisão concluída — enter vê o resultado · t pergunta mais · f conclui")
+			return m, nil
+		}
+	}
 	switch s.Status {
 	case session.StatusPending:
 		return m.runPhase(s, session.PhasePlan, "")
@@ -675,7 +732,7 @@ func (m Model) runPhase(s *session.Session, phase, resumeID string) (tea.Model, 
 	s.LogFile = filepath.Join(session.LogDir(), s.ID+"-"+phase+".jsonl")
 	m.sess.Save()
 	delete(m.progress, s.ID) // o painel não deve mostrar a fase anterior
-	m.sessInfo = dim.Render("rodando " + phaseLabel(phase) + " de " + s.Key + "…")
+	m.sessInfo = dim.Render("rodando " + phaseLabel(phase, s.Mode) + " de " + s.Key + "…")
 
 	cfg := m.cfg
 	sess := *s
@@ -714,7 +771,11 @@ func (m Model) runPhase(s *session.Session, phase, resumeID string) (tea.Model, 
 		case session.PhaseDev:
 			opts.Prompt = claude.DevPrompt(*ctx)
 		case session.PhaseReview:
-			opts.Prompt = claude.ReviewPrompt(*ctx)
+			if sess.IsReview() {
+				opts.Prompt = claude.ReviewMRPrompt(*ctx)
+			} else {
+				opts.Prompt = claude.ReviewPrompt(*ctx)
+			}
 		default:
 			opts.Prompt = claude.PlanPrompt(*ctx)
 		}
@@ -724,8 +785,15 @@ func (m Model) runPhase(s *session.Session, phase, resumeID string) (tea.Model, 
 	return m, tea.Batch(run, m.maybeTick())
 }
 
-// phaseLabel descreve a fase do pipeline para a UI.
-func phaseLabel(p string) string {
+// phaseLabel descreve a fase para a UI. No modo revisão há só uma fase, sem
+// a numeração "x/3" do pipeline de desenvolvimento.
+func phaseLabel(p, mode string) string {
+	if mode == session.ModeReview {
+		if p == session.PhaseReview {
+			return "revisão"
+		}
+		return ""
+	}
 	switch p {
 	case session.PhasePlan:
 		return "plano 1/3"
@@ -782,7 +850,7 @@ func (m Model) viewSessoes() (string, int) {
 		}
 		write(cursor + statusLabel(s.Status) + "  " + warnStyle.Render(s.Key) + " " + s.Title + "\n")
 		meta := "    " + s.Service + " · " + s.Branch + " · " + s.Created.Format("02/01 15:04")
-		if pl := phaseLabel(s.Phase); pl != "" {
+		if pl := phaseLabel(s.Phase, s.Mode); pl != "" {
 			meta += " · " + pl
 		}
 		write(dim.Render(meta) + "\n")
@@ -790,7 +858,7 @@ func (m Model) viewSessoes() (string, int) {
 			write("    " + errStyle.Render(s.Err) + "\n")
 		}
 		if p, ok := m.progress[s.ID]; ok && s.Status == session.StatusRunning {
-			write(dim.Render(fmt.Sprintf("    %s %s · %d turnos", m.spin.View(), phaseLabel(s.Phase), p.Turns)))
+			write(dim.Render(fmt.Sprintf("    %s %s · %d turnos", m.spin.View(), phaseLabel(s.Phase, s.Mode), p.Turns)))
 			if len(p.Tools) > 0 {
 				write(dim.Render(" · " + strings.Join(p.Tools, " → ")))
 			}
@@ -804,7 +872,7 @@ func (m Model) viewSessoes() (string, int) {
 				write("    " + truncate(r, 160) + "\n")
 			}
 			next := session.NextPhase(s.Phase)
-			write("    " + dim.Render("enter vê o resultado · s aprova e roda "+phaseLabel(next)) + "\n")
+			write("    " + dim.Render("enter vê o resultado · s aprova e roda "+phaseLabel(next, s.Mode)) + "\n")
 		}
 		if s.Status == session.StatusDone {
 			if r := s.Results[session.PhaseReview]; r != "" {
@@ -812,7 +880,11 @@ func (m Model) viewSessoes() (string, int) {
 			} else if p, ok := m.progress[s.ID]; ok && p.Result != "" {
 				write("    " + okStyle.Render(truncate(p.Result, 200)) + "\n")
 			}
-			write("    " + dim.Render("enter vê o veredito · s corrige os ajustes · f conclui") + "\n")
+			hint := "enter vê o veredito · s corrige os ajustes · f conclui"
+			if s.IsReview() {
+				hint = "enter vê a revisão · t pergunta mais · f conclui"
+			}
+			write("    " + dim.Render(hint) + "\n")
 		}
 	}
 	return b.String(), sel

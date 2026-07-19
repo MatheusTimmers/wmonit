@@ -35,12 +35,15 @@ func storePath() string {
 func Load() (*Store, error) {
 	s := &Store{path: storePath()}
 	data, err := os.ReadFile(s.path)
+
 	if errors.Is(err, os.ErrNotExist) {
 		return s, nil
 	}
+
 	if err != nil {
 		return nil, err
 	}
+
 	if err := json.Unmarshal(data, &s.Tasks); err != nil {
 		return nil, fmt.Errorf("lendo %s: %w", s.path, err)
 	}
@@ -51,6 +54,7 @@ func (s *Store) Save() error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
 		return err
 	}
+
 	data, err := json.MarshalIndent(s.Tasks, "", "  ")
 	if err != nil {
 		return err
@@ -58,9 +62,6 @@ func (s *Store) Save() error {
 	return os.WriteFile(s.path, data, 0o644)
 }
 
-// Add cria uma tarefa a partir do texto digitado. Um sufixo "@today",
-// "@tomorrow" ou "@YYYY-MM-DD" vira a data de vencimento, opcionalmente
-// seguido de um horário "HH:MM" para o lembrete (ex.: "@today 15:00").
 func (s *Store) Add(input string) {
 	text, due, dueTime := parseDue(input)
 	s.Tasks = append(s.Tasks, Task{Text: text, Due: due, DueTime: dueTime, Created: time.Now()})
@@ -84,20 +85,19 @@ func (s *Store) DeleteAt(i int) {
 	}
 }
 
-// parseDue separa o sufixo de vencimento do texto. O sufixo só vale se a
-// tarefa terminar com ele: "@today", "@tomorrow" ou "@YYYY-MM-DD",
-// opcionalmente seguidos de um horário "HH:MM". Qualquer outra coisa
-// depois do "@" mantém o texto intacto — nada é descartado em silêncio.
 func parseDue(input string) (text, due, dueTime string) {
 	text = strings.TrimSpace(input)
 	idx := strings.LastIndex(text, "@")
 	if idx < 0 {
 		return text, "", ""
 	}
+
 	fields := strings.Fields(text[idx+1:])
 	if len(fields) == 0 || len(fields) > 2 {
 		return text, "", ""
+		// TODO: Retornar error
 	}
+
 	today := time.Now()
 	switch strings.ToLower(fields[0]) {
 	case "today":
@@ -111,7 +111,9 @@ func parseDue(input string) (text, due, dueTime string) {
 	}
 	if due == "" {
 		return text, "", "" // não era uma tag de data válida
+		// TODO: Return error
 	}
+
 	if len(fields) == 2 {
 		t, err := time.Parse("15:04", fields[1])
 		if err != nil {
@@ -119,6 +121,7 @@ func parseDue(input string) (text, due, dueTime string) {
 		}
 		dueTime = t.Format("15:04")
 	}
+
 	rest := strings.TrimSpace(text[:idx])
 	if rest == "" {
 		return text, "", "" // só a tag, sem descrição — não vira vencimento

@@ -52,7 +52,6 @@ type jiMsg struct {
 type tickMsg time.Time
 type reminderMsg time.Time
 
-// detailMsg traz o conteúdo do painel de detalhes carregado de forma assíncrona.
 type detailMsg struct {
 	body string
 	err  error
@@ -64,8 +63,8 @@ type Model struct {
 	hist  *history.Store
 	sess  *session.Store
 
-	// Estado das sessões de trabalho (aba Sessões e tecla 'c').
-	describing     bool // textbox de explicação da tarefa aberto
+	// Estado das sessões de trabalho
+	describing     bool
 	descInput      textarea.Model
 	pickingService bool
 	pickOptions    []string
@@ -79,7 +78,7 @@ type Model struct {
 
 	tab     tab
 	gl      *gitlab.Summary
-	mine    []gitlab.MR // MRs do usuário deduplicados (cache por fetch)
+	mine    []gitlab.MR
 	glErr   error
 	ji      *jira.Summary
 	jiErr   error
@@ -106,7 +105,14 @@ type Model struct {
 	vp      viewport.Model
 	updated time.Time
 
-	notified map[string]bool // lembretes já disparados nesta sessão
+	notified map[string]bool
+
+	// Alertas proativos: o que já foi notificado por fonte e a linha de base
+	// (não notificar na primeira leitura nem após reiniciar).
+	seenTodos   map[int]bool
+	issueStatus map[string]string
+	glBaseline  bool
+	jiBaseline  bool
 
 	width, height int
 }
@@ -122,7 +128,7 @@ func New(cfg config.Config, store *tasks.Store) Model {
 	ta.SetHeight(8)
 	hist, _ := history.Load() // sem histórico ainda não é erro fatal
 	sess, _ := session.Load() // mesmo com erro o store volta utilizável
-	return Model{cfg: cfg, store: store, hist: hist, sess: sess, input: ti, filterInput: fi, descInput: ta, spin: sp, vp: viewport.New(80, 20), loading: 2, notified: map[string]bool{}, progress: map[string]claude.Progress{}, handles: map[string]*claude.Handle{}, taskCtx: map[string]*claude.TaskContext{}}
+	return Model{cfg: cfg, store: store, hist: hist, sess: sess, input: ti, filterInput: fi, descInput: ta, spin: sp, vp: viewport.New(80, 20), loading: 2, notified: map[string]bool{}, seenTodos: map[int]bool{}, issueStatus: map[string]string{}, progress: map[string]claude.Progress{}, handles: map[string]*claude.Handle{}, taskCtx: map[string]*claude.TaskContext{}}
 }
 
 func (m Model) Init() tea.Cmd {
@@ -137,8 +143,6 @@ func reminderTick() tea.Cmd {
 	return tea.Tick(reminderEvery, func(t time.Time) tea.Msg { return reminderMsg(t) })
 }
 
-// checkReminders dispara uma notificação para cada tarefa cujo horário de
-// lembrete já chegou hoje e que ainda não foi notificada nesta sessão.
 func (m Model) checkReminders() tea.Cmd {
 	now := time.Now()
 	today := now.Format("2006-01-02")
@@ -147,14 +151,17 @@ func (m Model) checkReminders() tea.Cmd {
 		if t.Done || t.DueTime == "" || t.Due != today {
 			continue
 		}
-		due, err := time.ParseInLocation("2006-01-02 15:04", t.Due+" "+t.DueTime, time.Local)
+
+		due, err := time.ParseInLocation("2006-01-02 15:04", t.Due + " " + t.DueTime, time.Local)
 		if err != nil || now.Before(due) {
 			continue
 		}
+
 		key := t.Due + " " + t.DueTime + " " + t.Text
 		if m.notified[key] {
 			continue
 		}
+
 		m.notified[key] = true
 		cmds = append(cmds, notifyCmd("wmonit — lembrete", t.Text))
 	}
@@ -254,7 +261,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.updated = time.Now()
 		m.recordToday()
-		return m, nil
+		return m, m.gitlabAlerts()
 
 	case jiMsg:
 		if msg.gen != m.fetchGen {
@@ -264,7 +271,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ji, m.jiErr = msg.sum, msg.err
 		m.updated = time.Now()
 		m.recordToday()
-		return m, nil
+		return m, m.jiraAlerts()
 
 	case sessCreatedMsg:
 		if msg.err != nil {
@@ -321,11 +328,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case msg.err != nil:
 				s.Status = session.StatusFailed
 				s.Err = msg.err.Error()
-				body = "falhou na fase " + phaseLabel(s.Phase) + ": " + s.Err
-			case session.NextPhase(s.Phase) != "":
+				body = "falhou na fase " + phaseLabel(s.Phase, s.Mode) + ": " + s.Err
+			case !s.IsReview() && session.NextPhase(s.Phase) != "":
 				// Gate manual: a próxima fase só roda com a sua aprovação.
 				s.Status = session.StatusWaiting
-				body = phaseLabel(s.Phase) + " concluído — revise (enter) e aprove (s)"
+				body = phaseLabel(s.Phase, s.Mode) + " concluído — revise (enter) e aprove (s)"
+			case s.IsReview():
+				s.Status = session.StatusDone
+				body = "revisão concluída — veja o resultado (enter)"
 			default:
 				s.Status = session.StatusDone
 				body = "review concluído — veja o veredito (enter)"
