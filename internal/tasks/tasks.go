@@ -2,6 +2,7 @@ package tasks
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -35,8 +36,10 @@ type Store struct {
 	Tasks []Task
 }
 
-func Load() (*Store, error) {
-	js := store.JSON[[]Task]{Path: paths.DataFile("tasks.json")}
+func Load() (*Store, error) { return LoadFrom(paths.DataDir()) }
+
+func LoadFrom(dir string) (*Store, error) {
+	js := store.JSON[[]Task]{Path: filepath.Join(dir, "tasks.json")}
 	tasks, err := js.Load()
 	if err != nil {
 		return nil, err
@@ -59,7 +62,6 @@ func (s *Store) Add(input string) error {
 	return nil
 }
 
-// TODO: Faz sentido isso aqui
 var priorityAliases = map[string]string{
 	"critica":  PriorityCritical,
 	"crítica":  PriorityCritical,

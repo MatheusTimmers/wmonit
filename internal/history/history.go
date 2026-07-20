@@ -4,6 +4,7 @@
 package history
 
 import (
+	"path/filepath"
 	"time"
 
 	"github.com/timmers/wmonit/internal/paths"
@@ -24,8 +25,10 @@ type Store struct {
 	Days []Day
 }
 
-func Load() (*Store, error) {
-	js := store.JSON[[]Day]{Path: paths.DataFile("history.json")}
+func Load() (*Store, error) { return LoadFrom(paths.DataDir()) }
+
+func LoadFrom(dir string) (*Store, error) {
+	js := store.JSON[[]Day]{Path: filepath.Join(dir, "history.json")}
 	days, err := js.Load()
 	if err != nil {
 		return nil, err

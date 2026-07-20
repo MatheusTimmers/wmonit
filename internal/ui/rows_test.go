@@ -25,13 +25,13 @@ func TestGitlabRowsFilter(t *testing.T) {
 	m := Model{
 		tab:    tabGitLab,
 		filter: "login",
-		gl: &gitlab.Summary{
+		fetch: fetchState{gl: &gitlab.Summary{
 			Username: "tim",
 			OpenMRs: []gitlab.MR{
 				{IID: 1, ProjectID: 9, Title: "corrige login #ABC-1"},
 				{IID: 2, ProjectID: 9, Title: "ajusta cache #ABC-2"},
 			},
-		},
+		}},
 	}
 	if got := m.focusCount(); got != 1 {
 		t.Fatalf("focusCount com filtro = %d, esperado 1", got)
@@ -47,12 +47,12 @@ func TestJiraRowsFilterByStatus(t *testing.T) {
 		tab:    tabJira,
 		cfg:    config.Config{},
 		filter: "deploy",
-		ji: &jira.Summary{
+		fetch: fetchState{ji: &jira.Summary{
 			Open: []jira.Issue{
 				{Key: "ABC-1", Summary: "tarefa A", Status: "Em Deploy", Category: "indeterminate"},
 				{Key: "ABC-2", Summary: "tarefa B", Status: "Em Andamento", Category: "indeterminate"},
 			},
-		},
+		}},
 	}
 	rows := m.jiraRows()
 	if !strings.Contains(rows[0].text, "deploy") {

@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,20 +12,15 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/timmers/wmonit/internal/claude"
-	"github.com/timmers/wmonit/internal/config"
 	"github.com/timmers/wmonit/internal/gitlab"
-	"github.com/timmers/wmonit/internal/jira"
 	"github.com/timmers/wmonit/internal/session"
 	"github.com/timmers/wmonit/internal/worktree"
 )
 
 // sessFinishedMsg chega quando a execução headless do Claude terminou.
-// ctx (quando a fase montou o contexto da tarefa) é cacheado para as fases
-// seguintes não repetirem as buscas no Jira/GitLab.
 type sessFinishedMsg struct {
 	id     string
 	prompt string
-	ctx    *claude.TaskContext
 	err    error
 }
 
@@ -70,10 +64,10 @@ func sessTick() tea.Cmd {
 // maybeTick inicia a cadeia de polling só se ela não estiver viva — sem
 // isso cada fase/sessão empilharia mais uma cadeia de ticks de 2s.
 func (m *Model) maybeTick() tea.Cmd {
-	if m.ticking {
+	if m.sui.ticking {
 		return nil
 	}
-	m.ticking = true
+	m.sui.ticking = true
 	return sessTick()
 }
 
@@ -94,7 +88,7 @@ func (m *Model) pollProgress() {
 			continue
 		}
 		if p, err := claude.ReadProgress(s.LogFile); err == nil {
-			m.progress[s.ID] = p
+			m.sui.progress[s.ID] = p
 		}
 	}
 }
@@ -156,8 +150,8 @@ func (m Model) newSessionFromItem(it *focusItem) (sess session.Session, guess st
 		Kind:   session.KindIssue,
 	}
 	// Issue: o serviço vem de um MR já ligado pela #TAG, se houver.
-	if m.gl != nil {
-		for _, mr := range m.gl.OpenMRs {
+	if m.fetch.gl != nil {
+		for _, mr := range m.fetch.gl.OpenMRs {
 			if mr.JiraKey() == is.Key {
 				guess = mr.Project()
 				break
@@ -184,32 +178,32 @@ func (m Model) ownsMR(mr gitlab.MR) bool {
 func (m Model) startSession(it *focusItem) (tea.Model, tea.Cmd) {
 	sess, guess, create := m.newSessionFromItem(it)
 	if sess.Branch == "" {
-		m.sessInfo = errStyle.Render("MR sem branch de origem — atualize (r) e tente de novo")
+		m.sui.sessInfo = errStyle.Render("MR sem branch de origem — atualize (r) e tente de novo")
 		return m, nil
 	}
 	if m.sess.HasActiveFor(sess.Key) {
-		m.sessInfo = warnStyle.Render("já existe sessão ativa para " + sess.Key)
+		m.sui.sessInfo = warnStyle.Render("já existe sessão ativa para " + sess.Key)
 		return m, nil
 	}
 	// Falha rápida: detectar os serviços antes do usuário investir tempo
 	// digitando a explicação.
 	services, err := worktree.DetectServices(m.cfg.Claude.SourcesDir)
 	if err != nil {
-		m.sessInfo = errStyle.Render("lendo " + m.cfg.Claude.SourcesDir + ": " + err.Error())
+		m.sui.sessInfo = errStyle.Render("lendo " + m.cfg.Claude.SourcesDir + ": " + err.Error())
 		return m, nil
 	}
 	if len(services) == 0 {
-		m.sessInfo = errStyle.Render("nenhum serviço (repo git) em " + m.cfg.Claude.SourcesDir)
+		m.sui.sessInfo = errStyle.Render("nenhum serviço (repo git) em " + m.cfg.Claude.SourcesDir)
 		return m, nil
 	}
-	m.pending = &pendingSession{sess: sess, createBranch: create, guess: guess, services: services}
+	m.sui.pending = &pendingSession{sess: sess, createBranch: create, guess: guess, services: services}
 	m.tab = tabSessoes
 	m.cursor = 0
 	m.filter = ""
-	m.sessInfo = ""
+	m.sui.sessInfo = ""
 	m.mode = modeDescribing
-	m.descInput.Reset()
-	m.descInput.Focus()
+	m.sui.descInput.Reset()
+	m.sui.descInput.Focus()
 	m.vp.GotoTop()
 	return m, textarea.Blink
 }
@@ -219,35 +213,35 @@ func (m Model) updateDescribe(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.mode = modeNormal
-		m.pending = nil
-		m.descInput.Blur()
-		m.sessInfo = dim.Render("sessão cancelada")
+		m.sui.pending = nil
+		m.sui.descInput.Blur()
+		m.sui.sessInfo = dim.Render("sessão cancelada")
 		return m, nil
 	case "ctrl+d", "ctrl+s":
 		m.mode = modeNormal
-		m.descInput.Blur()
-		if m.pending == nil {
+		m.sui.descInput.Blur()
+		if m.sui.pending == nil {
 			return m, nil
 		}
-		m.pending.sess.UserNote = strings.TrimSpace(m.descInput.Value())
+		m.sui.pending.sess.UserNote = strings.TrimSpace(m.sui.descInput.Value())
 		return m.continueSession()
 	case "ctrl+r":
 		// Alterna entre desenvolvimento e revisão sem perder a explicação.
-		if m.pending != nil {
-			if m.pending.sess.IsReview() {
-				m.pending.sess.Mode = session.ModeImplement
+		if m.sui.pending != nil {
+			if m.sui.pending.sess.IsReview() {
+				m.sui.pending.sess.Mode = session.ModeImplement
 			} else {
-				m.pending.sess.Mode = session.ModeReview
+				m.sui.pending.sess.Mode = session.ModeReview
 			}
 		}
 		return m, nil
 	case "ctrl+e":
 		// Edita a explicação no editor externo (nvim): leva o texto atual e
 		// traz de volta o que for salvo. A TUI fica suspensa enquanto isso.
-		return m, editNoteCmd(m.cfg, m.descInput.Value())
+		return m, editNoteCmd(m.cfg, m.sui.descInput.Value())
 	}
 	var cmd tea.Cmd
-	m.descInput, cmd = m.descInput.Update(msg)
+	m.sui.descInput, cmd = m.sui.descInput.Update(msg)
 	return m, cmd
 }
 
@@ -255,9 +249,9 @@ func (m Model) updateDescribe(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) viewDescribe() string {
 	var b strings.Builder
 	key, title, review := "", "", false
-	if m.pending != nil {
-		key, title = m.pending.sess.Key, m.pending.sess.Title
-		review = m.pending.sess.IsReview()
+	if m.sui.pending != nil {
+		key, title = m.sui.pending.sess.Key, m.sui.pending.sess.Title
+		review = m.sui.pending.sess.IsReview()
 	}
 	head, mode, expl, start := "📝 Nova sessão — ",
 		okStyle.Render("desenvolvimento (plan → dev → review)"),
@@ -272,7 +266,7 @@ func (m Model) viewDescribe() string {
 	b.WriteString(section.Render(head+key) + " " + title + "\n\n")
 	b.WriteString(dim.Render("modo: ") + mode + dim.Render("  (ctrl+r troca)") + "\n")
 	b.WriteString(dim.Render(expl) + "\n\n")
-	b.WriteString(m.descInput.View() + "\n\n")
+	b.WriteString(m.sui.descInput.View() + "\n\n")
 	b.WriteString(dim.Render(start + " · ctrl+e edita no editor · ctrl+r troca o modo · esc cancela"))
 	return b.String()
 }
@@ -280,18 +274,18 @@ func (m Model) viewDescribe() string {
 // continueSession segue após a explicação: deduz o serviço ou abre a
 // lista de escolha; com serviço definido, cria o worktree.
 func (m Model) continueSession() (tea.Model, tea.Cmd) {
-	p := m.pending
+	p := m.sui.pending
 	for _, s := range p.services {
 		if strings.EqualFold(s, p.guess) {
 			p.sess.Service = s
-			m.pending = nil
+			m.sui.pending = nil
 			return m.launchCreate(p.sess, p.createBranch)
 		}
 	}
 	// Sem dedução: o usuário escolhe na lista.
 	m.mode = modePickingService
-	m.pickOptions = p.services
-	m.pickCursor = 0
+	m.sui.pickOptions = p.services
+	m.sui.pickCursor = 0
 	return m, nil
 }
 
@@ -302,7 +296,7 @@ func (m Model) launchCreate(sess session.Session, createBranch bool) (tea.Model,
 	sess.Worktree = filepath.Join(m.cfg.Claude.WorktreesDir, sess.ID)
 	sess.Status = session.StatusPending
 	sess.Created = time.Now()
-	m.sessInfo = dim.Render("criando worktree de " + sess.Key + " em " + sess.Service + "…")
+	m.sui.sessInfo = dim.Render("criando worktree de " + sess.Key + " em " + sess.Service + "…")
 	return m, func() tea.Msg {
 		err := worktree.Add(sess.Repo, sess.Worktree, sess.Branch, createBranch)
 		if err == nil {
@@ -319,31 +313,31 @@ func (m Model) updatePickService(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "q":
 		// Volta para o textbox sem perder a explicação digitada.
-		if m.pending != nil {
+		if m.sui.pending != nil {
 			m.mode = modeDescribing
-			m.descInput.Focus()
+			m.sui.descInput.Focus()
 			return m, textarea.Blink
 		}
 		m.mode = modeNormal
 		return m, nil
 	case "j", "down":
-		if m.pickCursor < len(m.pickOptions)-1 {
-			m.pickCursor++
+		if m.sui.pickCursor < len(m.sui.pickOptions)-1 {
+			m.sui.pickCursor++
 		}
 		return m, nil
 	case "k", "up":
-		if m.pickCursor > 0 {
-			m.pickCursor--
+		if m.sui.pickCursor > 0 {
+			m.sui.pickCursor--
 		}
 		return m, nil
 	case "enter":
-		p := m.pending
+		p := m.sui.pending
 		m.mode = modeNormal
-		m.pending = nil
+		m.sui.pending = nil
 		if p == nil {
 			return m, nil
 		}
-		p.sess.Service = m.pickOptions[m.pickCursor]
+		p.sess.Service = m.sui.pickOptions[m.sui.pickCursor]
 		return m.launchCreate(p.sess, p.createBranch)
 	}
 	return m, nil
@@ -353,13 +347,13 @@ func (m Model) updatePickService(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) viewPickService() string {
 	var b strings.Builder
 	key := ""
-	if m.pending != nil {
-		key = m.pending.sess.Key
+	if m.sui.pending != nil {
+		key = m.sui.pending.sess.Key
 	}
 	b.WriteString(section.Render("🛠 Em qual serviço trabalhar "+key+"?") + "\n\n")
-	for i, s := range m.pickOptions {
+	for i, s := range m.sui.pickOptions {
 		cursor := "  "
-		if i == m.pickCursor {
+		if i == m.sui.pickCursor {
 			cursor = cursorStyle.Render("▌ ")
 		}
 		b.WriteString(cursor + s + "\n")
@@ -390,7 +384,7 @@ func (m Model) sessionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if s := m.selectedSession(); s != nil &&
 			(s.Status == session.StatusPending || s.Status == session.StatusWaiting ||
 				s.Status == session.StatusFailed || s.Status == session.StatusDone) {
-			return m.startRun(s)
+			return m.startRun(s.ID)
 		}
 	case "enter", "p":
 		// Resultado das fases (plano, resumo do dev, veredito) sem sair do TUI.
@@ -422,14 +416,22 @@ func (m Model) sessionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "x":
 		if s := m.selectedSession(); s != nil {
-			return m.cancelSession(s)
+			return m.cancelSession(s.ID)
 		}
 	case "d":
 		if s := m.selectedSession(); s != nil {
+			if s.Status == session.StatusRunning {
+				m.sui.sessInfo = warnStyle.Render("sessão em execução — cancele com x antes de remover")
+				return m, nil
+			}
 			return m, m.removeSessionCmd(*s, false)
 		}
 	case "D":
 		if s := m.selectedSession(); s != nil {
+			if s.Status == session.StatusRunning {
+				m.sui.sessInfo = warnStyle.Render("sessão em execução — cancele com x antes de remover")
+				return m, nil
+			}
 			return m, m.removeSessionCmd(*s, true)
 		}
 	}
@@ -464,10 +466,10 @@ func (m Model) removeSessionCmd(s session.Session, force bool) tea.Cmd {
 // veredito/resumo de cada fase e o conteúdo do plano (WMONIT_PLAN.md).
 func (m Model) openSessionDetail(s session.Session) (tea.Model, tea.Cmd) {
 	m.mode = modeDetail
-	m.detailLoading = true
-	m.detailBody = ""
-	m.detailTitle = "sessão " + s.Key
-	m.detailURL = s.URL
+	m.detail.loading = true
+	m.detail.body = ""
+	m.detail.title = "sessão " + s.Key
+	m.detail.url = s.URL
 	m.vp.GotoTop()
 	wrap := m.wrapText
 	return m, func() tea.Msg {
@@ -514,10 +516,10 @@ func (m Model) openSessionDetail(s session.Session) (tea.Model, tea.Cmd) {
 // openDiff mostra o diff do worktree no painel de detalhes.
 func (m Model) openDiff(s session.Session) (tea.Model, tea.Cmd) {
 	m.mode = modeDetail
-	m.detailLoading = true
-	m.detailBody = ""
-	m.detailTitle = "diff " + s.Key
-	m.detailURL = s.URL
+	m.detail.loading = true
+	m.detail.body = ""
+	m.detail.title = "diff " + s.Key
+	m.detail.url = s.URL
 	m.vp.GotoTop()
 	return m, func() tea.Msg {
 		d, err := worktree.Diff(s.Worktree)
@@ -549,125 +551,22 @@ func (m Model) finishSessionCmd(s session.Session, force bool) tea.Cmd {
 
 // cancelSession mata a execução em andamento (se houver) e marca a
 // sessão como cancelada; o worktree fica para inspeção (remova com d/D).
-func (m Model) cancelSession(s *session.Session) (tea.Model, tea.Cmd) {
-	if h, ok := m.handles[s.ID]; ok {
-		h.Kill()
-		delete(m.handles, s.ID)
-	}
-	if s.Status == session.StatusRunning || s.Status == session.StatusPending {
-		s.Status = session.StatusCancelled
-		now := time.Now()
-		s.Finished = &now
-		m.sess.Save()
-		m.sessInfo = warnStyle.Render("sessão " + s.Key + " cancelada — worktree mantido (d remove)")
+func (m Model) cancelSession(id string) (tea.Model, tea.Cmd) {
+	m.runner.Cancel(id)
+	var key string
+	m.sess.Update(id, func(s *session.Session) {
+		if s.Status == session.StatusRunning || s.Status == session.StatusPending {
+			s.Status = session.StatusCancelled
+			now := time.Now()
+			s.Finished = &now
+			key = s.Key
+		}
+	})
+	if key != "" {
+		m.save(m.sess.Save())
+		m.sui.sessInfo = warnStyle.Render("sessão " + key + " cancelada — worktree mantido (d remove)")
 	}
 	return m, nil
-}
-
-// mrRef aponta o MR da sessão (ou ligado à issue pela #TAG), com o que já
-// está em memória — os comentários são buscados depois, fora da UI.
-type mrRef struct {
-	projectID, iid int
-	ref, desc      string
-}
-
-func newMRRef(mr gitlab.MR) *mrRef {
-	return &mrRef{projectID: mr.ProjectID, iid: mr.IID, ref: mr.ShortRef(), desc: mr.Description}
-}
-
-// mrFor acha o MR da sessão: pela ref exata (sessão de MR, mesmo já
-// mergeado) ou pela #TAG no título (sessão de issue), preferindo o MR do
-// mesmo serviço quando a issue tem MRs em mais de um repositório.
-func (m Model) mrFor(sess session.Session) *mrRef {
-	if m.gl == nil {
-		return nil
-	}
-	all := m.myMRs()
-	for i := range all {
-		if all[i].ShortRef() == sess.Key {
-			return newMRRef(all[i])
-		}
-	}
-	if !sess.IsIssue() {
-		return nil
-	}
-	var fallback *mrRef
-	for i := range all {
-		if all[i].JiraKey() != sess.Key {
-			continue
-		}
-		if strings.EqualFold(all[i].Project(), sess.Service) {
-			return newMRRef(all[i])
-		}
-		if fallback == nil {
-			fallback = newMRRef(all[i])
-		}
-	}
-	return fallback
-}
-
-// noteLines formata os comentários (não-sistema) de um MR.
-func noteLines(notes []gitlab.Note) []string {
-	var out []string
-	for _, n := range notes {
-		if !n.System {
-			out = append(out, n.Author.Name+": "+strings.TrimSpace(n.Body))
-		}
-	}
-	return out
-}
-
-// jiraDetail busca os detalhes da issue, tolerando client nulo (testes/demo).
-func jiraDetail(ji *jira.Client, key string) (*jira.IssueDetail, error) {
-	if ji == nil {
-		return nil, fmt.Errorf("jira não configurado")
-	}
-	return ji.IssueDetail(context.Background(), key)
-}
-
-// fetchTaskContext compõe o contexto completo da tarefa (Jira + GitLab),
-// reusando os clients do Model. Roda fora da UI; erros de rede degradam
-// para o contexto parcial.
-func fetchTaskContext(gl *gitlab.Client, ji *jira.Client, cfg config.Config, sess session.Session, mr *mrRef) claude.TaskContext {
-	isIssue := sess.IsIssue()
-	ctx := claude.TaskContext{
-		Key:       sess.Key,
-		Title:     sess.Title,
-		URL:       sess.URL,
-		UserNote:  sess.UserNote,
-		Template:  cfg.Claude.Templates[sess.Service],
-		HasBranch: !isIssue, // sessão de MR usa branch existente
-	}
-	var notes []string
-	if mr != nil && gl != nil {
-		raw, _ := gl.MRNotes(context.Background(), mr.projectID, mr.iid)
-		notes = noteLines(raw)
-	}
-	if isIssue {
-		// Sessão de issue: descrição/comentários do Jira; o MR ligado vira contexto extra.
-		if det, err := jiraDetail(ji, sess.Key); err == nil {
-			ctx.Description = det.Description
-			for _, c := range det.Comments {
-				ctx.Comments = append(ctx.Comments, c.Author+": "+c.Body)
-			}
-		}
-		if mr != nil {
-			var b strings.Builder
-			b.WriteString(mr.ref)
-			if mr.desc != "" {
-				b.WriteString("\n" + mr.desc)
-			}
-			for _, n := range notes {
-				b.WriteString("\n- " + n)
-			}
-			ctx.MRInfo = b.String()
-		}
-	} else if mr != nil {
-		// Sessão do próprio MR: descrição e comentários do MR são a tarefa.
-		ctx.Description = mr.desc
-		ctx.Comments = notes
-	}
-	return ctx
 }
 
 // startRun é a tecla 's': o que ela faz depende de onde a sessão está no
@@ -677,81 +576,46 @@ func fetchTaskContext(gl *gitlab.Client, ji *jira.Client, cfg config.Config, ses
 //	aguardando aprovação → aprova e dispara a próxima fase
 //	falhou → tenta a fase de novo (retomando a conversa, se houver)
 //	pronta → ciclo de correção: retoma o dev com o veredito do review
-func (m Model) startRun(s *session.Session) (tea.Model, tea.Cmd) {
-	act, ok := s.Plan()
+func (m Model) startRun(id string) (tea.Model, tea.Cmd) {
+	sess, ok := m.sess.Get(id)
+	if !ok {
+		return m, nil
+	}
+	act, ok := sess.Plan()
 	if !ok {
 		switch {
-		case s.IsReview():
-			m.sessInfo = dim.Render("revisão concluída — enter vê o resultado · t pergunta mais · f conclui")
-		case s.Status == session.StatusDone:
-			m.sessInfo = warnStyle.Render("sem conversa para retomar — use 't' para abrir o Claude interativo")
+		case sess.IsReview():
+			m.sui.sessInfo = dim.Render("revisão concluída — enter vê o resultado · t pergunta mais · f conclui")
+		case sess.Status == session.StatusDone:
+			m.sui.sessInfo = warnStyle.Render("sem conversa para retomar — use 't' para abrir o Claude interativo")
 		}
 		return m, nil
 	}
-	return m.runPhase(s, act)
+	return m.runPhase(id, act)
 }
 
-// runPhase dispara a Action do pipeline em background. Quando act tem
-// ResumeID, retoma aquela conversa do Claude em vez de começar do zero (com
-// prompt de correção quando act.UseFix).
-func (m Model) runPhase(s *session.Session, act session.Action) (tea.Model, tea.Cmd) {
-	s.Phase = act.Phase
-	s.Status = session.StatusRunning
-	s.Err = ""
-	s.Finished = nil
-	s.LogFile = filepath.Join(session.LogDir(), s.ID+"-"+act.Phase+".jsonl")
-	m.sess.Save()
-	delete(m.progress, s.ID) // o painel não deve mostrar a fase anterior
-	m.sessInfo = dim.Render("rodando " + phaseLabel(act.Phase, s.Mode) + " de " + s.Key + "…")
+// runPhase dispara a Action do pipeline em background; a orquestração fica
+// no pipeline.Runner. O LogFile é resolvido aqui e gravado na sessão antes
+// da execução para o polling conseguir ler o progresso enquanto roda.
+func (m Model) runPhase(id string, act session.Action) (tea.Model, tea.Cmd) {
+	var sess session.Session
+	m.sess.Update(id, func(s *session.Session) {
+		s.Phase = act.Phase
+		s.Status = session.StatusRunning
+		s.Err = ""
+		s.Finished = nil
+		s.LogFile = filepath.Join(m.sess.LogDir(), s.ID+"-"+act.Phase+".jsonl")
+		sess = *s
+	})
+	m.save(m.sess.Save())
+	delete(m.sui.progress, id) // o painel não deve mostrar a fase anterior
+	m.sui.sessInfo = dim.Render("rodando " + phaseLabel(act.Phase, sess.Mode) + " de " + sess.Key + "…")
 
-	cfg := m.cfg
-	sess := *s
-	gl, ji := m.glClient, m.jiClient
-	verdict := s.Results[session.PhaseReview]
-	cached := m.taskCtx[s.ID] // contexto já buscado numa fase anterior
-	var mr *mrRef
-	if cached == nil {
-		mr = m.mrFor(sess) // dados do GitLab já em memória; rede fica no closure
-	}
-	opts := claude.Opts{
-		Bin:            cfg.Claude.Bin,
-		Dir:            sess.Worktree,
-		LogFile:        sess.LogFile,
-		Model:          cfg.Claude.Models[act.Phase],
-		PermissionMode: cfg.Claude.PermissionMode,
-	}
-	h := &claude.Handle{}
-	m.handles[s.ID] = h
+	runner := m.runner
+	mrs := m.myMRs() // dados do GitLab já em memória; rede fica no closure
 	run := func() tea.Msg {
-		if act.ResumeID != "" {
-			if act.UseFix {
-				opts.Prompt = claude.FixPrompt(verdict)
-			} else {
-				opts.Prompt = claude.ResumePrompt()
-			}
-			opts.Resume = act.ResumeID
-			err := claude.Run(opts, h)
-			return sessFinishedMsg{id: sess.ID, prompt: opts.Prompt, err: err}
-		}
-		ctx := cached
-		if ctx == nil {
-			c := fetchTaskContext(gl, ji, cfg, sess, mr)
-			ctx = &c
-		}
-		switch act.Phase {
-		case session.PhaseDev:
-			opts.Prompt = claude.DevPrompt(*ctx)
-		case session.PhaseReview:
-			if sess.IsReview() {
-				opts.Prompt = claude.ReviewMRPrompt(*ctx)
-			} else {
-				opts.Prompt = claude.ReviewPrompt(*ctx)
-			}
-		default:
-			opts.Prompt = claude.PlanPrompt(*ctx)
-		}
-		err := claude.Run(opts, h)
-		return sessFinishedMsg{id: sess.ID, prompt: opts.Prompt, ctx: ctx, err: err}
+		prompt, err := runner.RunPhase(sess, act, mrs)
+		return sessFinishedMsg{id: sess.ID, prompt: prompt, err: err}
 	}
 	return m, tea.Batch(run, m.maybeTick())
 }
@@ -806,8 +670,8 @@ func (m Model) viewSessoes() (string, int) {
 		b.WriteString(s)
 		line += strings.Count(s, "\n")
 	}
-	if m.sessInfo != "" {
-		write(m.sessInfo + "\n\n")
+	if m.sui.sessInfo != "" {
+		write(m.sui.sessInfo + "\n\n")
 	}
 	if len(m.sess.Sessions) == 0 {
 		write(dim.Render("nenhuma sessão — selecione uma issue (Jira) ou MR (GitLab) e pressione 'c'") + "\n")
@@ -828,7 +692,7 @@ func (m Model) viewSessoes() (string, int) {
 		if s.Err != "" {
 			write("    " + errStyle.Render(s.Err) + "\n")
 		}
-		if p, ok := m.progress[s.ID]; ok && s.Status == session.StatusRunning {
+		if p, ok := m.sui.progress[s.ID]; ok && s.Status == session.StatusRunning {
 			write(dim.Render(fmt.Sprintf("    %s %s · %d turnos", m.spin.View(), phaseLabel(s.Phase, s.Mode), p.Turns)))
 			if len(p.Tools) > 0 {
 				write(dim.Render(" · " + strings.Join(p.Tools, " → ")))
@@ -848,7 +712,7 @@ func (m Model) viewSessoes() (string, int) {
 		if s.Status == session.StatusDone {
 			if r := s.Results[session.PhaseReview]; r != "" {
 				write("    " + okStyle.Render(truncate(r, 200)) + "\n")
-			} else if p, ok := m.progress[s.ID]; ok && p.Result != "" {
+			} else if p, ok := m.sui.progress[s.ID]; ok && p.Result != "" {
 				write("    " + okStyle.Render(truncate(p.Result, 200)) + "\n")
 			}
 			hint := "enter vê o veredito · s corrige os ajustes · f conclui"

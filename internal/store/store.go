@@ -30,14 +30,41 @@ func (s JSON[T]) Load() (T, error) {
 	return v, nil
 }
 
-// Save grava v indentado, criando o diretório se preciso.
+// Save grava v indentado, criando o diretório se preciso. A gravação é
+// atômica: escreve num arquivo temporário no mesmo diretório e substitui o
+// destino com rename — assim uma falha no meio do caminho (ou uma leitura
+// concorrente) nunca encontra o arquivo pela metade.
 func (s JSON[T]) Save(v T) error {
-	if err := os.MkdirAll(filepath.Dir(s.Path), 0o755); err != nil {
+	dir := filepath.Dir(s.Path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.Path, data, 0o644)
+	tmp, err := os.CreateTemp(dir, filepath.Base(s.Path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	_, writeErr := tmp.Write(data)
+	closeErr := tmp.Close()
+	if writeErr != nil {
+		os.Remove(tmpPath)
+		return writeErr
+	}
+	if closeErr != nil {
+		os.Remove(tmpPath)
+		return closeErr
+	}
+	if err := os.Chmod(tmpPath, 0o644); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, s.Path); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	return nil
 }

@@ -21,17 +21,17 @@ func (m Model) viewReport() string {
 
 	// MRs abertos (criados) e mergeados hoje.
 	m.writeMRSection(&b, "📬 MRs abertos hoje", func() []gitlab.MR { return createdIn(m.myMRs(), dayStart, dayEnd) })
-	m.writeMRSection(&b, "✅ MRs mergeados hoje", func() []gitlab.MR { return mergedIn(m.gl.Merged, dayStart, dayEnd) })
+	m.writeMRSection(&b, "✅ MRs mergeados hoje", func() []gitlab.MR { return mergedIn(m.fetch.gl.Merged, dayStart, dayEnd) })
 
 	// Issues resolvidas hoje.
 	b.WriteString(section.Render("✅ Issues resolvidas hoje") + "\n")
 	switch {
-	case m.jiErr != nil:
-		b.WriteString(errStyle.Render("  "+m.jiErr.Error()) + "\n")
-	case m.ji == nil:
+	case m.fetch.jiErr != nil:
+		b.WriteString(errStyle.Render("  "+m.fetch.jiErr.Error()) + "\n")
+	case m.fetch.ji == nil:
 		b.WriteString(dim.Render("  carregando…") + "\n")
 	default:
-		resolved := resolvedIn(m.ji.Resolved, today, today)
+		resolved := resolvedIn(m.fetch.ji.Resolved, today, today)
 		if len(resolved) == 0 {
 			b.WriteString(dim.Render("  nenhuma") + "\n")
 		}
@@ -66,9 +66,9 @@ func (m Model) viewReport() string {
 func (m Model) writeMRSection(b *strings.Builder, title string, mrs func() []gitlab.MR) {
 	b.WriteString(section.Render(title) + "\n")
 	switch {
-	case m.glErr != nil:
-		b.WriteString(errStyle.Render("  "+m.glErr.Error()) + "\n")
-	case m.gl == nil:
+	case m.fetch.glErr != nil:
+		b.WriteString(errStyle.Render("  "+m.fetch.glErr.Error()) + "\n")
+	case m.fetch.gl == nil:
 		b.WriteString(dim.Render("  carregando…") + "\n")
 	default:
 		list := mrs()
@@ -92,12 +92,12 @@ func (m Model) reportSummary() string {
 	today := now.Format("2006-01-02")
 	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
 	opened, mrs, iss, tsk := 0, 0, 0, 0
-	if m.gl != nil {
+	if m.fetch.gl != nil {
 		opened = len(createdIn(m.myMRs(), dayStart, dayStart.AddDate(0, 0, 1)))
-		mrs = len(mergedIn(m.gl.Merged, dayStart, dayStart.AddDate(0, 0, 1)))
+		mrs = len(mergedIn(m.fetch.gl.Merged, dayStart, dayStart.AddDate(0, 0, 1)))
 	}
-	if m.ji != nil {
-		iss = len(resolvedIn(m.ji.Resolved, today, today))
+	if m.fetch.ji != nil {
+		iss = len(resolvedIn(m.fetch.ji.Resolved, today, today))
 	}
 	for _, t := range m.store.Tasks {
 		if t.Done && t.DoneAt != nil && t.DoneAt.Format("2006-01-02") == today {

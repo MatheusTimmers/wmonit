@@ -1,10 +1,12 @@
 // Package demo fornece dados inventados para rodar o wmonit sem conexão
-// com o GitLab/Jira — útil para ver as telas e testar a UI offline. Não há
-// injeção de dependência: o modo demo é só um flag que o app consulta para
-// devolver estes dados em vez de chamar a rede.
+// com o GitLab/Jira — útil para ver as telas e testar a UI offline. Os
+// tipos GitLabSource/JiraSource implementam os mesmos contratos que a UI
+// espera dos clients reais, então o modo demo é injetado no composition
+// root (main) em vez de espalhado por flags dentro da UI.
 package demo
 
 import (
+	"context"
 	"time"
 
 	"github.com/timmers/wmonit/internal/gitlab"
@@ -12,6 +14,43 @@ import (
 	"github.com/timmers/wmonit/internal/session"
 	"github.com/timmers/wmonit/internal/tasks"
 )
+
+// GitLabSource devolve os dados inventados do GitLab satisfazendo o mesmo
+// contrato do *gitlab.Client usado pela UI.
+type GitLabSource struct{}
+
+func (GitLabSource) Fetch(ctx context.Context) (*gitlab.Summary, error) { return GitLab(), nil }
+
+func (GitLabSource) MRNotes(ctx context.Context, projectID, iid int) ([]gitlab.Note, error) {
+	mk := func(name, body string, h int) gitlab.Note {
+		n := gitlab.Note{Body: body, CreatedAt: hoursAgo(h)}
+		n.Author.Name = name
+		return n
+	}
+	return []gitlab.Note{
+		mk("Ana Revisora", "Podemos cobrir o caso de payload vazio antes de mergear?", 4),
+		mk("Você", "Boa, adicionei o teste e tratei o nil.", 2),
+	}, nil
+}
+
+// JiraSource devolve os dados inventados do Jira satisfazendo o mesmo
+// contrato do *jira.Client usado pela UI.
+type JiraSource struct{}
+
+func (JiraSource) Fetch(ctx context.Context) (*jira.Summary, error) { return Jira(), nil }
+
+func (JiraSource) IssueDetail(ctx context.Context, key string) (*jira.IssueDetail, error) {
+	return &jira.IssueDetail{
+		Key:         key,
+		Summary:     "Issue de demonstração " + key,
+		Status:      "Em Andamento",
+		Description: "Descrição de demonstração para " + key + ".\n\nContexto ilustrativo do modo demo.",
+		Comments: []jira.Comment{
+			{Author: "Product Owner", Body: "Priorizamos para esta sprint.", Created: ymd(2)},
+			{Author: "Você", Body: "Em andamento, subo o MR hoje.", Created: ymd(0)},
+		},
+	}, nil
+}
 
 func daysAgo(n int) time.Time  { return time.Now().AddDate(0, 0, -n) }
 func hoursAgo(n int) time.Time { return time.Now().Add(time.Duration(-n) * time.Hour) }
@@ -156,15 +195,14 @@ func demoSessions() []session.Session {
 	}
 }
 
-// SeedData grava as tarefas e sessões de demonstração no diretório de dados
-// atual (em modo demo o app aponta XDG_DATA_HOME para uma pasta temporária,
-// então os dados reais não são tocados). Sobrescreve a cada execução.
-func SeedData() {
-	if ts, err := tasks.Load(); err == nil {
+// SeedData semeia tarefas e sessões de demonstração no diretório de dados
+// (temporário) do modo demo, sem tocar nos dados reais do usuário.
+func SeedData(dir string) {
+	if ts, err := tasks.LoadFrom(dir); err == nil {
 		ts.Tasks = demoTasks()
 		_ = ts.Save()
 	}
-	if ss, err := session.Load(); err == nil {
+	if ss, err := session.LoadFrom(dir); err == nil {
 		ss.Sessions = demoSessions()
 		_ = ss.Save()
 	}

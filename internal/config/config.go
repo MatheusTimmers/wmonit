@@ -1,7 +1,9 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -34,7 +36,7 @@ type Claude struct {
 	WorktreesDir   string            `toml:"worktrees_dir"`
 	Bin            string            `toml:"bin"`
 	BranchPrefix   string            `toml:"branch_prefix"`
-	Templates      map[string]string `toml:"templates"` // TODO: Seria legal adicionar de forma geral tbm
+	Templates      map[string]string `toml:"templates"` // TODO: Seria legal adicionar um template geral e não por serviço
 	Models         map[string]string `toml:"models"`
 	PermissionMode string            `toml:"permission_mode"`
 }
@@ -69,7 +71,7 @@ func Path() string {
 
 func Load() (Config, error) {
 	var cfg Config
-	if _, err := toml.DecodeFile(Path(), &cfg); err != nil && !os.IsNotExist(err) {
+	if _, err := toml.DecodeFile(Path(), &cfg); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return cfg, fmt.Errorf("lendo %s: %w", Path(), err)
 	}
 	if v := os.Getenv("WMONIT_GITLAB_URL"); v != "" {

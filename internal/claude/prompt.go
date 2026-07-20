@@ -94,7 +94,7 @@ func DevPrompt(c TaskContext) string {
 	b.WriteString("- Implemente o plano nesta branch (você já está nela).\n")
 	b.WriteString("- Siga as convenções do código existente.\n")
 	b.WriteString("- Antes de terminar, releia o diff completo procurando erros óbvios.\n")
-	fmt.Fprintf(&b, "- Faça commits pequenos com mensagens claras; NÃO faça push e NÃO commite o %s.\n", PlanFile)
+	fmt.Fprintf(&b, "- Faça um único commit, com mensagem de uma frase só (título, sem corpo/descrição) e sem trailer Co-Authored-By; NÃO faça push e NÃO commite o %s.\n", PlanFile)
 	b.WriteString("- Se algum passo do plano se mostrar inviável, adapte e registre o desvio no resumo final.\n")
 	b.WriteString("- Ao final, resuma o que foi feito e o que ficou pendente.\n")
 	return b.String()
@@ -117,7 +117,7 @@ func FixPrompt(verdict string) string {
 	b.WriteString("- Revise o estado atual do repositório antes de mexer.\n")
 	b.WriteString("- Corrija os problemas apontados; se discordar de algum, justifique no resumo final.\n")
 	b.WriteString("- Releia o diff das correções antes de terminar.\n")
-	fmt.Fprintf(&b, "- Faça commits pequenos com mensagens claras; NÃO faça push e NÃO commite o %s.\n", PlanFile)
+	fmt.Fprintf(&b, "- Faça um único commit com as correções, com mensagem de uma frase só (título, sem corpo/descrição) e sem trailer Co-Authored-By; NÃO faça push e NÃO commite o %s.\n", PlanFile)
 	b.WriteString("- Ao final, resuma o que foi corrigido.\n")
 	return b.String()
 }
@@ -134,7 +134,7 @@ func ReviewMRPrompt(c TaskContext) string {
 	b.WriteString("- Descubra a branch base (geralmente a default do remoto, ex.: origin/HEAD) e use git (log/diff contra a base) para ver TODAS as mudanças do MR.\n")
 	b.WriteString("- Entenda o objetivo da mudança (use a descrição/comentários acima) e leia o código alterado e o redor que ele afeta.\n")
 	b.WriteString("- Procure bugs, casos de borda, condições de corrida, problemas de segurança, regressões e desvios das convenções do código existente.\n")
-	b.WriteString("- A revisão é por leitura: build e testes ficam comigo, e a falta deles NÃO é motivo para reprovar — avalie o código em si.\n")
+	b.WriteString("- A revisão é por leitura: build e testes ficam comigo.\n")
 	b.WriteString("- Entregue: (1) um resumo do que o MR faz; (2) os pontos encontrados como comentários de review prontos para eu colar no GitLab, cada um com arquivo:linha e a sugestão; (3) uma recomendação final — APROVAR ou PEDIR AJUSTES — justificada.\n")
 	return b.String()
 }

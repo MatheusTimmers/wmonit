@@ -16,7 +16,7 @@ Para ver as telas e testar a interface sem nenhuma conexão, rode com dados
 inventados:
 
 ```sh
-./wmonit --demo      # ou: WMONIT_DEMO=1 ./wmonit
+./wmonit --demo
 ```
 
 O modo demo preenche GitLab e Jira com dados fictícios (MRs, fila de review,

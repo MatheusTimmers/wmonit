@@ -172,18 +172,21 @@ var jiraKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]*-\d+$`)
 
 type Store struct {
 	js       store.JSON[[]Session]
+	dir      string
 	Sessions []Session
 }
 
 // LogDir é onde ficam os logs stream-json das execuções.
-func LogDir() string { return filepath.Join(paths.DataDir(), "logs") }
+func (s *Store) LogDir() string { return filepath.Join(s.dir, "logs") }
 
 // Load lê o sessions.json. Mesmo em erro devolve um store utilizável
 // (vazio), para o app seguir funcionando sem as sessões antigas.
-func Load() (*Store, error) {
-	js := store.JSON[[]Session]{Path: paths.DataFile("sessions.json")}
+func Load() (*Store, error) { return LoadFrom(paths.DataDir()) }
+
+func LoadFrom(dir string) (*Store, error) {
+	js := store.JSON[[]Session]{Path: filepath.Join(dir, "sessions.json")}
 	sessions, err := js.Load()
-	return &Store{js: js, Sessions: sessions}, err
+	return &Store{js: js, dir: dir, Sessions: sessions}, err
 }
 
 func (s *Store) Save() error { return s.js.Save(s.Sessions) }
@@ -204,14 +207,27 @@ func (s *Store) Add(sess Session) {
 	s.Sessions = append(s.Sessions, sess)
 }
 
-// Find devolve um ponteiro para a sessão com o id, ou nil.
-func (s *Store) Find(id string) *Session {
+// Get devolve uma cópia da sessão com o id.
+func (s *Store) Get(id string) (Session, bool) {
 	for i := range s.Sessions {
 		if s.Sessions[i].ID == id {
-			return &s.Sessions[i]
+			return s.Sessions[i], true
 		}
 	}
-	return nil
+	return Session{}, false
+}
+
+// Update aplica fn à sessão com o id. O ponteiro não escapa da chamada, o que
+// evita a armadilha de guardar um ponteiro para dentro do slice (um Add
+// posterior pode realocá-lo). Devolve false se não achou.
+func (s *Store) Update(id string, fn func(*Session)) bool {
+	for i := range s.Sessions {
+		if s.Sessions[i].ID == id {
+			fn(&s.Sessions[i])
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Store) DeleteAt(i int) {

@@ -16,6 +16,3 @@ func DataDir() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".local", "share", "wmonit")
 }
-
-// DataFile devolve o caminho de um arquivo dentro da pasta de dados.
-func DataFile(name string) string { return filepath.Join(DataDir(), name) }

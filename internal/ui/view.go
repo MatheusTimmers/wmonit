@@ -85,13 +85,13 @@ func createdIn(mrs []gitlab.MR, start, end time.Time) []gitlab.MR {
 // myMRs devolve os MRs do usuário deduplicados — cacheado no glMsg para
 // não realocar a cada render; o fallback cobre Models montados em testes.
 func (m Model) myMRs() []gitlab.MR {
-	if m.mine != nil {
-		return m.mine
+	if m.fetch.mine != nil {
+		return m.fetch.mine
 	}
-	if m.gl == nil {
+	if m.fetch.gl == nil {
 		return nil
 	}
-	return m.gl.Mine()
+	return m.fetch.gl.Mine()
 }
 
 // resolvedIn filtra issues resolvidas entre as datas (inclusivas, YYYY-MM-DD).
@@ -161,7 +161,7 @@ func (m Model) View() string {
 
 	var topRow string
 	if m.mode == modeDetail {
-		topRow = tabActive.Render("🔍 "+m.detailTitle) + tabInactive.Render("esc volta · o abre no navegador")
+		topRow = tabActive.Render("🔍 "+m.detail.title) + tabInactive.Render("esc volta · o abre no navegador")
 	} else if m.mode == modeReport {
 		topRow = tabActive.Render("📋 Relatório do dia") + tabInactive.Render(m.reportSummary())
 	} else {
@@ -199,10 +199,10 @@ func (m Model) content() string {
 	case modePickingService:
 		return m.viewPickService()
 	case modeDetail:
-		if m.detailLoading {
+		if m.detail.loading {
 			return dim.Render("carregando…")
 		}
-		return m.detailBody
+		return m.detail.body
 	case modeReport:
 		return m.viewReport()
 	}
@@ -228,8 +228,8 @@ func (m Model) content() string {
 func (m Model) alerts() string {
 	today := time.Now().Format("2006-01-02")
 	due := 0
-	if m.ji != nil {
-		for _, is := range m.ji.Open {
+	if m.fetch.ji != nil {
+		for _, is := range m.fetch.ji.Open {
 			if is.Due != "" && is.Due <= today {
 				due++
 			}
@@ -241,8 +241,8 @@ func (m Model) alerts() string {
 		}
 	}
 	reviews := 0
-	if m.gl != nil {
-		reviews = len(m.gl.ReviewPending)
+	if m.fetch.gl != nil {
+		reviews = len(m.fetch.gl.ReviewPending)
 	}
 	var parts []string
 	if due > 0 {
@@ -282,18 +282,22 @@ func (m Model) footer(vp interface{ ScrollPercent() float64 }) string {
 		}
 	}
 	status := ""
-	if m.loading > 0 {
+	if m.fetch.loading > 0 {
 		status = m.spin.View() + " atualizando…"
-	} else if !m.updated.IsZero() {
-		status = "atualizado às " + m.updated.Format("15:04:05")
+	} else if !m.fetch.updated.IsZero() {
+		status = "atualizado às " + m.fetch.updated.Format("15:04:05")
 	}
 	if p := vp.ScrollPercent(); p < 1 {
 		status += dim.Render(fmt.Sprintf(" · %d%%", int(p*100)))
 	}
-	if m.demo {
-		return alertStyle.Render(" 🧪 DEMO ") + dim.Render(" "+help+"   "+status)
+	foot := dim.Render(" " + help + "   " + status)
+	if m.badge != "" {
+		foot = alertStyle.Render(" "+m.badge+" ") + foot
 	}
-	return dim.Render(" " + help + "   " + status)
+	if m.saveErr != "" {
+		foot = critStyle.Render(" ⚠ "+m.saveErr+" ") + foot
+	}
+	return foot
 }
 
 // prioBadge destaca prioridades fora do comum; as medianas ficam ocultas.
@@ -322,22 +326,29 @@ func sidelineKind(status string) string {
 	return ""
 }
 
-// mrBadge resume os MRs ligados a uma issue (pela #TAG no título).
-func (m Model) mrBadge(key string) string {
-	if m.gl == nil || key == "" {
-		return ""
+// linkedMRs devolve os MRs ligados a uma issue (pela #TAG no título), como
+// "!<iid> aberto"/"!<iid> mergeado".
+func (m Model) linkedMRs(key string) []string {
+	if m.fetch.gl == nil || key == "" {
+		return nil
 	}
 	var parts []string
-	for _, mr := range m.gl.OpenMRs {
+	for _, mr := range m.fetch.gl.OpenMRs {
 		if mr.JiraKey() == key {
 			parts = append(parts, fmt.Sprintf("!%d aberto", mr.IID))
 		}
 	}
-	for _, mr := range m.gl.Merged {
+	for _, mr := range m.fetch.gl.Merged {
 		if mr.JiraKey() == key {
 			parts = append(parts, fmt.Sprintf("!%d mergeado", mr.IID))
 		}
 	}
+	return parts
+}
+
+// mrBadge resume os MRs ligados a uma issue para o rodapé de uma linha.
+func (m Model) mrBadge(key string) string {
+	parts := m.linkedMRs(key)
 	if len(parts) == 0 {
 		return ""
 	}
@@ -352,18 +363,18 @@ func (m Model) viewHoje() string {
 	week := time.Now().AddDate(0, 0, 7).Format("2006-01-02")
 
 	switch {
-	case m.glErr != nil:
+	case m.fetch.glErr != nil:
 		b.WriteString(section.Render("⏳ Reviews aguardando você") + "\n")
-		b.WriteString(errStyle.Render("  "+m.glErr.Error()) + "\n")
-	case m.gl == nil:
+		b.WriteString(errStyle.Render("  "+m.fetch.glErr.Error()) + "\n")
+	case m.fetch.gl == nil:
 		b.WriteString(section.Render("⏳ Reviews aguardando você") + "\n")
 		b.WriteString(dim.Render("  carregando…") + "\n")
-	case len(m.gl.ReviewPending) == 0:
+	case len(m.fetch.gl.ReviewPending) == 0:
 		b.WriteString(section.Render("⏳ Reviews aguardando você") + "\n")
 		b.WriteString(okStyle.Render("  nenhum review pendente ✓") + "\n")
 	default:
-		b.WriteString(section.Render(fmt.Sprintf("⏳ Reviews aguardando você (%d)", len(m.gl.ReviewPending))) + "\n")
-		for _, mr := range m.gl.ReviewPending {
+		b.WriteString(section.Render(fmt.Sprintf("⏳ Reviews aguardando você (%d)", len(m.fetch.gl.ReviewPending))) + "\n")
+		for _, mr := range m.fetch.gl.ReviewPending {
 			line := "  " + dim.Render(mr.ShortRef()) + " " + mr.ShortTitle()
 			if k := mr.JiraKey(); k != "" {
 				line += dim.Render(" #" + k)
@@ -379,16 +390,16 @@ func (m Model) viewHoje() string {
 	b.WriteString(m.viewNovidades())
 
 	switch {
-	case m.jiErr != nil:
+	case m.fetch.jiErr != nil:
 		b.WriteString(section.Render("🔧 Em andamento") + "\n")
-		b.WriteString(errStyle.Render("  "+m.jiErr.Error()) + "\n")
-	case m.ji == nil:
+		b.WriteString(errStyle.Render("  "+m.fetch.jiErr.Error()) + "\n")
+	case m.fetch.ji == nil:
 		b.WriteString(section.Render("🔧 Em andamento") + "\n")
 		b.WriteString(dim.Render("  carregando…") + "\n")
 	default:
 		var active []jira.Issue
 		sidelined := map[string]int{}
-		for _, is := range m.ji.Open {
+		for _, is := range m.fetch.ji.Open {
 			if is.Category != "indeterminate" {
 				continue
 			}
@@ -430,8 +441,8 @@ func (m Model) viewHoje() string {
 
 	b.WriteString(section.Render("🔥 Vence hoje / atrasado") + "\n")
 	n := 0
-	if m.ji != nil {
-		for _, is := range m.ji.Open {
+	if m.fetch.ji != nil {
+		for _, is := range m.fetch.ji.Open {
 			if is.Due != "" && is.Due <= today {
 				b.WriteString("  " + warnStyle.Render(is.Key) + " " + is.Summary + dim.Render(" ("+is.Due+")") + "\n")
 				n++
@@ -451,8 +462,8 @@ func (m Model) viewHoje() string {
 
 	b.WriteString(section.Render("📅 Próximos 7 dias") + "\n")
 	n = 0
-	if m.ji != nil {
-		for _, is := range m.ji.Open {
+	if m.fetch.ji != nil {
+		for _, is := range m.fetch.ji.Open {
 			if is.Due != "" && is.Due > today && is.Due <= week {
 				b.WriteString("  " + is.Key + " " + is.Summary + dim.Render(" ("+is.Due+")") + "\n")
 				n++
@@ -531,35 +542,66 @@ func goalBar(label string, cur, goal int) string {
 	return fmt.Sprintf("  %-16s %s %d/%d%s", label, bar, cur, goal, mark)
 }
 
+// perfWindow são as âncoras de tempo do desempenho, calculadas uma vez e
+// passadas às seções para todas usarem o mesmo "agora".
+type perfWindow struct {
+	now                      time.Time
+	today                    string
+	weekStart, curDayStart   time.Time
+	curStart, prevStart      time.Time
+	prevEndDate, dCur, dPrev string
+	mine                     []gitlab.MR
+}
+
+func newPerfWindow(mine []gitlab.MR) perfWindow {
+	now := time.Now()
+	curStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local)
+	prevStart := curStart.AddDate(0, -1, 0)
+	return perfWindow{
+		now:         now,
+		today:       now.Format("2006-01-02"),
+		weekStart:   startOfWeek(now),
+		curDayStart: time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local),
+		curStart:    curStart,
+		prevStart:   prevStart,
+		prevEndDate: curStart.AddDate(0, 0, -1).Format("2006-01-02"),
+		dCur:        curStart.Format("2006-01-02"),
+		dPrev:       prevStart.Format("2006-01-02"),
+		mine:        mine,
+	}
+}
+
 func (m Model) viewDesempenho() string {
 	var b strings.Builder
 	b.WriteString(section.Render("📈 Desempenho") + "\n\n")
 
-	if m.glErr != nil {
-		b.WriteString(errStyle.Render(m.glErr.Error()) + "\n")
+	if m.fetch.glErr != nil {
+		b.WriteString(errStyle.Render(m.fetch.glErr.Error()) + "\n")
 	}
-	if m.jiErr != nil {
-		b.WriteString(errStyle.Render(m.jiErr.Error()) + "\n")
+	if m.fetch.jiErr != nil {
+		b.WriteString(errStyle.Render(m.fetch.jiErr.Error()) + "\n")
 	}
-	if m.gl == nil && m.ji == nil {
-		if m.glErr == nil && m.jiErr == nil {
+	if m.fetch.gl == nil && m.fetch.ji == nil {
+		if m.fetch.glErr == nil && m.fetch.jiErr == nil {
 			b.WriteString(dim.Render("carregando…") + "\n")
 		}
 		return b.String()
 	}
-	if m.glErr != nil || m.jiErr != nil {
+	if m.fetch.glErr != nil || m.fetch.jiErr != nil {
 		b.WriteString("\n")
 	}
 
-	now := time.Now()
-	today := now.Format("2006-01-02")
-	weekStart := startOfWeek(now)
-	curDayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
-	curStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local)
-	prevStart := curStart.AddDate(0, -1, 0)
-	prevEndDate := curStart.AddDate(0, 0, -1).Format("2006-01-02")
-	dCur, dPrev := curStart.Format("2006-01-02"), prevStart.Format("2006-01-02")
+	w := newPerfWindow(m.myMRs())
+	m.perfTable(&b, w)
+	m.perfGoals(&b, w)
+	m.perfTrend(&b, w)
+	m.perfPace(&b, w)
+	m.perfBreakdown(&b, w)
+	return b.String()
+}
 
+// perfTable mostra abertos/mergeados/issues por semana e mês atual/anterior.
+func (m Model) perfTable(b *strings.Builder, w perfWindow) {
 	type prow struct {
 		label  string
 		tStart time.Time // início (para MRs)
@@ -568,99 +610,96 @@ func (m Model) viewDesempenho() string {
 		dEnd   string    // fim (para issues, inclusivo)
 	}
 	rows := []prow{
-		{"esta semana", weekStart, now, weekStart.Format("2006-01-02"), today},
-		{fmt.Sprintf("%s (até dia %d)", ptMonth(curStart), now.Day()), curStart, now, dCur, today},
-		{ptMonth(prevStart) + " (completo)", prevStart, curStart, dPrev, prevEndDate},
+		{"esta semana", w.weekStart, w.now, w.weekStart.Format("2006-01-02"), w.today},
+		{fmt.Sprintf("%s (até dia %d)", ptMonth(w.curStart), w.now.Day()), w.curStart, w.now, w.dCur, w.today},
+		{ptMonth(w.prevStart) + " (completo)", w.prevStart, w.curStart, w.dPrev, w.prevEndDate},
 	}
-
-	mine := m.myMRs()
 	b.WriteString(dim.Render(fmt.Sprintf("  %-20s %12s %14s %8s", "", "MRs abertos", "MRs mergeados", "Issues")) + "\n")
 	for _, r := range rows {
 		opened, mrs := 0, 0
-		if m.gl != nil {
-			opened = len(createdIn(mine, r.tStart, r.tEnd))
-			mrs = len(mergedIn(m.gl.Merged, r.tStart, r.tEnd))
+		if m.fetch.gl != nil {
+			opened = len(createdIn(w.mine, r.tStart, r.tEnd))
+			mrs = len(mergedIn(m.fetch.gl.Merged, r.tStart, r.tEnd))
 		}
 		n := 0
-		if m.ji != nil {
-			n = len(resolvedIn(m.ji.Resolved, r.dStart, r.dEnd))
+		if m.fetch.ji != nil {
+			n = len(resolvedIn(m.fetch.ji.Resolved, r.dStart, r.dEnd))
 		}
 		b.WriteString(fmt.Sprintf("  %-20s %12d %14d %8d\n", r.label, opened, mrs, n))
 	}
 	b.WriteString("\n")
+}
 
-	// Metas semanais e sequência de dias com entrega.
-	if m.hist != nil {
-		b.WriteString(section.Render("🎯 Metas e sequência") + "\n")
-		if streak := m.hist.Streak(now); streak > 0 {
-			b.WriteString(okStyle.Render(fmt.Sprintf("  🔥 sequência: %d dias úteis com entrega", streak)) + "\n")
-		} else {
-			b.WriteString(dim.Render("  sem sequência ativa — entregue algo para começar") + "\n")
-		}
-		if g := m.cfg.Goals.WeeklyMRs; g > 0 && m.gl != nil {
-			b.WriteString(goalBar("MRs na semana", len(mergedIn(m.gl.Merged, weekStart, now)), g) + "\n")
-		}
-		if g := m.cfg.Goals.WeeklyIssues; g > 0 && m.ji != nil {
-			b.WriteString(goalBar("Issues na semana", len(resolvedIn(m.ji.Resolved, weekStart.Format("2006-01-02"), today)), g) + "\n")
-		}
-		b.WriteString("\n")
+// perfGoals mostra a sequência de dias com entrega e as metas semanais.
+func (m Model) perfGoals(b *strings.Builder, w perfWindow) {
+	if m.hist == nil {
+		return
 	}
+	b.WriteString(section.Render("🎯 Metas e sequência") + "\n")
+	if streak := m.hist.Streak(w.now); streak > 0 {
+		b.WriteString(okStyle.Render(fmt.Sprintf("  🔥 sequência: %d dias úteis com entrega", streak)) + "\n")
+	} else {
+		b.WriteString(dim.Render("  sem sequência ativa — entregue algo para começar") + "\n")
+	}
+	if g := m.cfg.Goals.WeeklyMRs; g > 0 && m.fetch.gl != nil {
+		b.WriteString(goalBar("MRs na semana", len(mergedIn(m.fetch.gl.Merged, w.weekStart, w.now)), g) + "\n")
+	}
+	if g := m.cfg.Goals.WeeklyIssues; g > 0 && m.fetch.ji != nil {
+		b.WriteString(goalBar("Issues na semana", len(resolvedIn(m.fetch.ji.Resolved, w.weekStart.Format("2006-01-02"), w.today)), g) + "\n")
+	}
+	b.WriteString("\n")
+}
 
-	// Tendência: dia, semana e mês, cada um contra o período anterior
-	// equivalente (mesmo nº de dias decorridos), para um termômetro justo.
+// perfTrend compara dia/semana/mês contra o período anterior equivalente
+// (mesmo nº de dias decorridos), para um termômetro justo.
+func (m Model) perfTrend(b *strings.Builder, w perfWindow) {
 	b.WriteString(section.Render("⚖ Tendência") + "\n")
 
-	// writeMRTrends compara abertos e mergeados do período atual contra o
-	// anterior equivalente — usado nas três janelas (dia, semana, mês).
 	writeMRTrends := func(curStart, curEnd, prevStart, prevEnd time.Time) {
-		if m.gl == nil {
+		if m.fetch.gl == nil {
 			return
 		}
-		c := len(createdIn(mine, curStart, curEnd))
-		p := len(createdIn(mine, prevStart, prevEnd))
+		c := len(createdIn(w.mine, curStart, curEnd))
+		p := len(createdIn(w.mine, prevStart, prevEnd))
 		b.WriteString(trendLine("MRs abertos", float64(c), float64(p), false) + "\n")
-		c = len(mergedIn(m.gl.Merged, curStart, curEnd))
-		p = len(mergedIn(m.gl.Merged, prevStart, prevEnd))
+		c = len(mergedIn(m.fetch.gl.Merged, curStart, curEnd))
+		p = len(mergedIn(m.fetch.gl.Merged, prevStart, prevEnd))
 		b.WriteString(trendLine("MRs mergeados", float64(c), float64(p), false) + "\n")
 	}
 
-	// Hoje vs ontem.
-	yStart := curDayStart.AddDate(0, 0, -1)
+	yStart := w.curDayStart.AddDate(0, 0, -1)
 	yDate := yStart.Format("2006-01-02")
 	b.WriteString(dim.Render("  hoje vs ontem") + "\n")
-	writeMRTrends(curDayStart, now, yStart, curDayStart)
-	if m.ji != nil {
-		c := len(resolvedIn(m.ji.Resolved, today, today))
-		p := len(resolvedIn(m.ji.Resolved, yDate, yDate))
+	writeMRTrends(w.curDayStart, w.now, yStart, w.curDayStart)
+	if m.fetch.ji != nil {
+		c := len(resolvedIn(m.fetch.ji.Resolved, w.today, w.today))
+		p := len(resolvedIn(m.fetch.ji.Resolved, yDate, yDate))
 		b.WriteString(trendLine("Issues resolvidas", float64(c), float64(p), false) + "\n")
 	}
 
-	// Esta semana vs a passada, até o mesmo momento da semana.
-	elapsed := now.Sub(weekStart)
-	lastWeekStart := weekStart.AddDate(0, 0, -7)
+	elapsed := w.now.Sub(w.weekStart)
+	lastWeekStart := w.weekStart.AddDate(0, 0, -7)
 	lastWeekEnd := lastWeekStart.Add(elapsed)
-	b.WriteString(dim.Render(fmt.Sprintf("  esta semana vs passada (até %s)", now.Format("02/01"))) + "\n")
-	writeMRTrends(weekStart, now, lastWeekStart, lastWeekEnd)
-	if m.ji != nil {
-		c := len(resolvedIn(m.ji.Resolved, weekStart.Format("2006-01-02"), today))
-		p := len(resolvedIn(m.ji.Resolved, lastWeekStart.Format("2006-01-02"), lastWeekEnd.Format("2006-01-02")))
+	b.WriteString(dim.Render(fmt.Sprintf("  esta semana vs passada (até %s)", w.now.Format("02/01"))) + "\n")
+	writeMRTrends(w.weekStart, w.now, lastWeekStart, lastWeekEnd)
+	if m.fetch.ji != nil {
+		c := len(resolvedIn(m.fetch.ji.Resolved, w.weekStart.Format("2006-01-02"), w.today))
+		p := len(resolvedIn(m.fetch.ji.Resolved, lastWeekStart.Format("2006-01-02"), lastWeekEnd.Format("2006-01-02")))
 		b.WriteString(trendLine("Issues resolvidas", float64(c), float64(p), false) + "\n")
 	}
 
-	// Este mês até hoje vs o mesmo nº de dias do mês anterior.
-	prevCmpEnd := prevStart.AddDate(0, 0, now.Day()-1)
-	if !prevCmpEnd.Before(curStart) {
-		prevCmpEnd = curStart.AddDate(0, 0, -1)
+	prevCmpEnd := w.prevStart.AddDate(0, 0, w.now.Day()-1)
+	if !prevCmpEnd.Before(w.curStart) {
+		prevCmpEnd = w.curStart.AddDate(0, 0, -1)
 	}
-	var curResolved, prevResolved, prevMonthAll []jira.Issue
-	if m.ji != nil {
-		curResolved = resolvedIn(m.ji.Resolved, dCur, today)
-		prevResolved = resolvedIn(m.ji.Resolved, dPrev, prevCmpEnd.Format("2006-01-02"))
-		prevMonthAll = resolvedIn(m.ji.Resolved, dPrev, prevEndDate)
+	var curResolved, prevResolved []jira.Issue
+	if m.fetch.ji != nil {
+		curResolved = resolvedIn(m.fetch.ji.Resolved, w.dCur, w.today)
+		prevResolved = resolvedIn(m.fetch.ji.Resolved, w.dPrev, prevCmpEnd.Format("2006-01-02"))
 	}
-	b.WriteString(dim.Render(fmt.Sprintf("  %s vs %s (até o dia %d)", ptMonth(curStart), ptMonth(prevStart), prevCmpEnd.Day())) + "\n")
-	writeMRTrends(curStart, now, prevStart, prevCmpEnd.AddDate(0, 0, 1))
-	if m.ji != nil {
+	b.WriteString(dim.Render(fmt.Sprintf("  %s vs %s (até o dia %d)", ptMonth(w.curStart), ptMonth(w.prevStart), prevCmpEnd.Day())) + "\n")
+	writeMRTrends(w.curStart, w.now, w.prevStart, prevCmpEnd.AddDate(0, 0, 1))
+	if m.fetch.ji != nil {
 		b.WriteString(trendLine("Issues resolvidas", float64(len(curResolved)), float64(len(prevResolved)), false) + "\n")
 		curLT, prevLT := avgLeadDays(curResolved), avgLeadDays(prevResolved)
 		if curLT > 0 && prevLT > 0 {
@@ -668,9 +707,11 @@ func (m Model) viewDesempenho() string {
 		}
 	}
 	b.WriteString("\n")
+}
 
-	// Ritmo semanal: produção em cada semana (seg–dom) desde o início do
-	// mês anterior, para enxergar aceleração ou queda ao longo do tempo.
+// perfPace mostra a produção por semana (seg–dom) desde o início do mês
+// anterior, para enxergar aceleração ou queda ao longo do tempo.
+func (m Model) perfPace(b *strings.Builder, w perfWindow) {
 	b.WriteString(section.Render("📅 Ritmo semanal") + "\n")
 	const barWidth = 12
 	b.WriteString(dim.Render(fmt.Sprintf("  %-13s %-*s %-*s %-*s", "seg–dom", barWidth+3, "MRs abertos", barWidth+3, "MRs mergeados", barWidth+3, "issues resolvidas")) + "\n")
@@ -680,33 +721,36 @@ func (m Model) viewDesempenho() string {
 	}
 	var weeks []wk
 	maxOpened, maxMRs, maxIss := 0, 0, 0
-	for ws := startOfWeek(prevStart); ws.Before(now); ws = ws.AddDate(0, 0, 7) {
+	for ws := startOfWeek(w.prevStart); ws.Before(w.now); ws = ws.AddDate(0, 0, 7) {
 		we := ws.AddDate(0, 0, 7)
-		w := wk{label: ws.Format("02/01") + "–" + we.AddDate(0, 0, -1).Format("02/01")}
-		if we.After(now) {
-			w.label += "*"
+		row := wk{label: ws.Format("02/01") + "–" + we.AddDate(0, 0, -1).Format("02/01")}
+		if we.After(w.now) {
+			row.label += "*"
 		}
-		if m.gl != nil {
-			w.opened = len(createdIn(mine, ws, we))
-			w.mrs = len(mergedIn(m.gl.Merged, ws, we))
+		if m.fetch.gl != nil {
+			row.opened = len(createdIn(w.mine, ws, we))
+			row.mrs = len(mergedIn(m.fetch.gl.Merged, ws, we))
 		}
-		if m.ji != nil {
-			w.iss = len(resolvedIn(m.ji.Resolved, ws.Format("2006-01-02"), we.AddDate(0, 0, -1).Format("2006-01-02")))
+		if m.fetch.ji != nil {
+			row.iss = len(resolvedIn(m.fetch.ji.Resolved, ws.Format("2006-01-02"), we.AddDate(0, 0, -1).Format("2006-01-02")))
 		}
-		maxOpened = max(maxOpened, w.opened)
-		maxMRs = max(maxMRs, w.mrs)
-		maxIss = max(maxIss, w.iss)
-		weeks = append(weeks, w)
+		maxOpened = max(maxOpened, row.opened)
+		maxMRs = max(maxMRs, row.mrs)
+		maxIss = max(maxIss, row.iss)
+		weeks = append(weeks, row)
 	}
-	for _, w := range weeks {
-		b.WriteString("  " + dim.Render(fmt.Sprintf("%-13s", w.label)) + " " +
-			barCell(barStyle3, w.opened, maxOpened, barWidth) + " " +
-			barCell(barStyle, w.mrs, maxMRs, barWidth) + " " +
-			barCell(barStyle2, w.iss, maxIss, barWidth) + "\n")
+	for _, row := range weeks {
+		b.WriteString("  " + dim.Render(fmt.Sprintf("%-13s", row.label)) + " " +
+			barCell(barStyle3, row.opened, maxOpened, barWidth) + " " +
+			barCell(barStyle, row.mrs, maxMRs, barWidth) + " " +
+			barCell(barStyle2, row.iss, maxIss, barWidth) + "\n")
 	}
 	b.WriteString(dim.Render("  * semana atual, ainda incompleta") + "\n\n")
+}
 
-	// Composição do trabalho por mês.
+// perfBreakdown mostra a composição do trabalho (tipo/complexidade/lead
+// time) do mês atual e do anterior, e um resumo do agora.
+func (m Model) perfBreakdown(b *strings.Builder, w perfWindow) {
 	writeBreakdown := func(title string, mrs []gitlab.MR, issues []jira.Issue) {
 		b.WriteString(section.Render(title) + "\n")
 		wrote := false
@@ -737,26 +781,26 @@ func (m Model) viewDesempenho() string {
 		b.WriteString("\n")
 	}
 	var curMRs, prevMRs []gitlab.MR
-	if m.gl != nil {
-		curMRs = mergedIn(m.gl.Merged, curStart, now)
-		prevMRs = mergedIn(m.gl.Merged, prevStart, curStart)
+	if m.fetch.gl != nil {
+		curMRs = mergedIn(m.fetch.gl.Merged, w.curStart, w.now)
+		prevMRs = mergedIn(m.fetch.gl.Merged, w.prevStart, w.curStart)
 	}
-	var curMonthAll []jira.Issue
-	if m.ji != nil {
-		curMonthAll = resolvedIn(m.ji.Resolved, dCur, today)
+	var curMonthAll, prevMonthAll []jira.Issue
+	if m.fetch.ji != nil {
+		curMonthAll = resolvedIn(m.fetch.ji.Resolved, w.dCur, w.today)
+		prevMonthAll = resolvedIn(m.fetch.ji.Resolved, w.dPrev, w.prevEndDate)
 	}
-	writeBreakdown("🧩 "+ptMonth(curStart)+" — composição", curMRs, curMonthAll)
-	writeBreakdown("🧩 "+ptMonth(prevStart)+" — composição", prevMRs, prevMonthAll)
+	writeBreakdown("🧩 "+ptMonth(w.curStart)+" — composição", curMRs, curMonthAll)
+	writeBreakdown("🧩 "+ptMonth(w.prevStart)+" — composição", prevMRs, prevMonthAll)
 
-	if m.gl != nil {
+	if m.fetch.gl != nil {
 		b.WriteString(section.Render("Agora") + "\n")
-		b.WriteString(fmt.Sprintf("  %d MRs abertos · %d reviews pendentes\n", len(m.gl.OpenMRs), len(m.gl.ReviewPending)))
+		b.WriteString(fmt.Sprintf("  %d MRs abertos · %d reviews pendentes\n", len(m.fetch.gl.OpenMRs), len(m.fetch.gl.ReviewPending)))
 	}
-	if m.ji != nil && m.ji.CXField == "" {
+	if m.fetch.ji != nil && m.fetch.ji.CXField == "" {
 		b.WriteString("\n" + dim.Render("complexidade indisponível — campo não encontrado no Jira;"+
 			" defina complexity_field no config.toml") + "\n")
 	}
-	return b.String()
 }
 
 func renderMR(mr gitlab.MR) string {

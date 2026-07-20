@@ -28,7 +28,7 @@ func TestNewSessionFromItemMode(t *testing.T) {
 	mine.References.Full = "grp/svc!10"
 	other := gitlab.MR{IID: 20, ProjectID: 2, Title: "MR do colega", SourceBranch: "feat/y"}
 	other.References.Full = "grp/svc!20"
-	m := Model{gl: &gitlab.Summary{OpenMRs: []gitlab.MR{mine}, ReviewPending: []gitlab.MR{other}}}
+	m := Model{fetch: fetchState{gl: &gitlab.Summary{OpenMRs: []gitlab.MR{mine}, ReviewPending: []gitlab.MR{other}}}}
 
 	if s, _, create := m.newSessionFromItem(&focusItem{mr: &mine}); s.Mode != session.ModeImplement || create {
 		t.Errorf("meu MR: mode=%q create=%v, esperado implement/false", s.Mode, create)
@@ -44,7 +44,7 @@ func TestGitlabRowsReviewQueue(t *testing.T) {
 	old := time.Now().Add(-48 * time.Hour)
 	a := gitlab.MR{IID: 1, ProjectID: 1, Title: "a revisar", UpdatedAt: old}
 	b := gitlab.MR{IID: 2, ProjectID: 1, Title: "outro", UpdatedAt: old}
-	m := Model{tab: tabGitLab, gl: &gitlab.Summary{Username: "tim", ReviewPending: []gitlab.MR{a, b}}}
+	m := Model{tab: tabGitLab, fetch: fetchState{gl: &gitlab.Summary{Username: "tim", ReviewPending: []gitlab.MR{a, b}}}}
 
 	var text strings.Builder
 	for _, r := range m.gitlabRows() {

@@ -85,11 +85,11 @@ func (m Model) selectedItem() *focusItem {
 func (m Model) gitlabRows() []row {
 	var rows []row
 	hdr := func(s string) { rows = append(rows, row{text: s}) }
-	if m.glErr != nil {
-		hdr(errStyle.Render(m.glErr.Error()))
+	if m.fetch.glErr != nil {
+		hdr(errStyle.Render(m.fetch.glErr.Error()))
 		return rows
 	}
-	if m.gl == nil {
+	if m.fetch.gl == nil {
 		hdr(dim.Render("carregando…"))
 		return rows
 	}
@@ -106,9 +106,9 @@ func (m Model) gitlabRows() []row {
 				items = append(items, row{text: renderMR(mrs[i]), item: &focusItem{mr: &mrs[i]}})
 			}
 		}
-		add(m.gl.OpenMRs)
-		add(m.gl.ReviewPending)
-		add(m.gl.Merged)
+		add(m.fetch.gl.OpenMRs)
+		add(m.fetch.gl.ReviewPending)
+		add(m.fetch.gl.Merged)
 		hdr(section.Render(fmt.Sprintf("🔎 filtro: %q (%d)", m.filter, len(items))))
 		rows = append(rows, items...)
 		if len(items) == 0 {
@@ -120,15 +120,15 @@ func (m Model) gitlabRows() []row {
 	now := time.Now()
 	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local)
-	merged := mergedIn(m.gl.Merged, startOfWeek(now), now)
+	merged := mergedIn(m.fetch.gl.Merged, startOfWeek(now), now)
 
 	mine := m.myMRs()
-	hdr(section.Render("📊 @" + m.gl.Username))
+	hdr(section.Render("📊 @" + m.fetch.gl.Username))
 	hdr(fmt.Sprintf("  MRs abertos   — hoje: %d · semana: %d · mês: %d",
 		len(createdIn(mine, dayStart, now)), len(createdIn(mine, startOfWeek(now), now)), len(createdIn(mine, monthStart, now))))
 	hdr(fmt.Sprintf("  MRs mergeados — hoje: %d · semana: %d · mês: %d",
-		len(mergedIn(m.gl.Merged, dayStart, now)), len(merged), len(mergedIn(m.gl.Merged, monthStart, now))))
-	hdr(fmt.Sprintf("  abertos agora: %d · reviews pendentes: %d", len(m.gl.OpenMRs), len(m.gl.ReviewPending)))
+		len(mergedIn(m.fetch.gl.Merged, dayStart, now)), len(merged), len(mergedIn(m.fetch.gl.Merged, monthStart, now))))
+	hdr(fmt.Sprintf("  abertos agora: %d · reviews pendentes: %d", len(m.fetch.gl.OpenMRs), len(m.fetch.gl.ReviewPending)))
 	hdr("")
 
 	addMRs := func(title string, mrs []gitlab.MR) {
@@ -141,17 +141,17 @@ func (m Model) gitlabRows() []row {
 			rows = append(rows, row{text: renderMR(mrs[i]), item: &focusItem{mr: &mrs[i]}})
 		}
 	}
-	addMRs("📬 MRs abertos", m.gl.OpenMRs)
+	addMRs("📬 MRs abertos", m.fetch.gl.OpenMRs)
 	hdr("")
 
 	// Fila de review: MRs aguardando você, do mais parado para o menos,
 	// cada um com o tempo de espera; continuam selecionáveis para 'c'.
-	hdr(section.Render(fmt.Sprintf("⏳ Aguardando seu review (%d)", len(m.gl.ReviewPending))))
-	if len(m.gl.ReviewPending) == 0 {
+	hdr(section.Render(fmt.Sprintf("⏳ Aguardando seu review (%d)", len(m.fetch.gl.ReviewPending))))
+	if len(m.fetch.gl.ReviewPending) == 0 {
 		hdr(dim.Render("  nenhum"))
 	}
-	for i := range m.gl.ReviewPending {
-		rows = append(rows, row{text: renderReviewMR(m.gl.ReviewPending[i]), item: &focusItem{mr: &m.gl.ReviewPending[i]}})
+	for i := range m.fetch.gl.ReviewPending {
+		rows = append(rows, row{text: renderReviewMR(m.fetch.gl.ReviewPending[i]), item: &focusItem{mr: &m.fetch.gl.ReviewPending[i]}})
 	}
 	hdr("")
 	addMRs("✅ Mergeados nesta semana", merged)
@@ -161,11 +161,11 @@ func (m Model) gitlabRows() []row {
 func (m Model) jiraRows() []row {
 	var rows []row
 	hdr := func(s string) { rows = append(rows, row{text: s}) }
-	if m.jiErr != nil {
-		hdr(errStyle.Render(m.jiErr.Error()))
+	if m.fetch.jiErr != nil {
+		hdr(errStyle.Render(m.fetch.jiErr.Error()))
 		return rows
 	}
-	if m.ji == nil {
+	if m.fetch.ji == nil {
 		hdr(dim.Render("carregando…"))
 		return rows
 	}
@@ -181,8 +181,8 @@ func (m Model) jiraRows() []row {
 				items = append(items, row{text: m.issueLine(issues[i]), item: &focusItem{issue: &issues[i]}})
 			}
 		}
-		add(m.ji.Open)
-		add(m.ji.Resolved)
+		add(m.fetch.ji.Open)
+		add(m.fetch.ji.Resolved)
 		hdr(section.Render(fmt.Sprintf("🔎 filtro: %q (%d)", m.filter, len(items))))
 		rows = append(rows, items...)
 		if len(items) == 0 {
@@ -195,19 +195,19 @@ func (m Model) jiraRows() []row {
 	today := now.Format("2006-01-02")
 	weekStartD := startOfWeek(now).Format("2006-01-02")
 	monthStartD := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local).Format("2006-01-02")
-	resolvedWeek := resolvedIn(m.ji.Resolved, weekStartD, today)
+	resolvedWeek := resolvedIn(m.fetch.ji.Resolved, weekStartD, today)
 
 	hdr(section.Render("📊 Resumo"))
 	hdr(fmt.Sprintf("  resolvidas — hoje: %d · semana: %d · mês: %d",
-		len(resolvedIn(m.ji.Resolved, today, today)), len(resolvedWeek), len(resolvedIn(m.ji.Resolved, monthStartD, today))))
-	hdr(fmt.Sprintf("  abertas: %d", len(m.ji.Open)))
+		len(resolvedIn(m.fetch.ji.Resolved, today, today)), len(resolvedWeek), len(resolvedIn(m.fetch.ji.Resolved, monthStartD, today))))
+	hdr(fmt.Sprintf("  abertas: %d", len(m.fetch.ji.Open)))
 	hdr("")
 
-	if len(m.ji.Open) == 0 {
+	if len(m.fetch.ji.Open) == 0 {
 		hdr(section.Render("📋 Suas issues abertas"))
 		hdr(dim.Render("  nenhuma"))
 	} else {
-		names, groups := groupByStatus(m.ji.Open, m.cfg.Jira.StatusOrder)
+		names, groups := groupByStatus(m.fetch.ji.Open, m.cfg.Jira.StatusOrder)
 		for _, name := range names {
 			issues := groups[name]
 			hdr(statusHead.Render(fmt.Sprintf("▍%s (%d)", name, len(issues))))

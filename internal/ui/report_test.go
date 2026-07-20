@@ -19,20 +19,22 @@ func TestViewReport(t *testing.T) {
 	old := now.AddDate(0, 0, -3)
 
 	m := Model{
-		gl: &gitlab.Summary{
-			OpenMRs: []gitlab.MR{
-				{IID: 3, Title: "aberto hoje #ABC-3", CreatedAt: now},
-				{IID: 4, Title: "aberto antes #ABC-4", CreatedAt: old},
+		fetch: fetchState{
+			gl: &gitlab.Summary{
+				OpenMRs: []gitlab.MR{
+					{IID: 3, Title: "aberto hoje #ABC-3", CreatedAt: now},
+					{IID: 4, Title: "aberto antes #ABC-4", CreatedAt: old},
+				},
+				Merged: []gitlab.MR{
+					{IID: 1, Title: "feature nova #ABC-1 [feature]", CreatedAt: old, MergedAt: &merged},
+					{IID: 2, Title: "antigo #ABC-2", CreatedAt: old, MergedAt: &old},
+				},
 			},
-			Merged: []gitlab.MR{
-				{IID: 1, Title: "feature nova #ABC-1 [feature]", CreatedAt: old, MergedAt: &merged},
-				{IID: 2, Title: "antigo #ABC-2", CreatedAt: old, MergedAt: &old},
-			},
+			ji: &jira.Summary{Resolved: []jira.Issue{
+				{Key: "ABC-1", Summary: "resolvida hoje", Resolved: today},
+				{Key: "ABC-9", Summary: "resolvida antes", Resolved: yesterday.Format("2006-01-02")},
+			}},
 		},
-		ji: &jira.Summary{Resolved: []jira.Issue{
-			{Key: "ABC-1", Summary: "resolvida hoje", Resolved: today},
-			{Key: "ABC-9", Summary: "resolvida antes", Resolved: yesterday.Format("2006-01-02")},
-		}},
 		store: &tasks.Store{Tasks: []tasks.Task{
 			{Text: "tarefa de hoje", Done: true, DoneAt: &now},
 			{Text: "tarefa de ontem", Done: true, DoneAt: &yesterday},

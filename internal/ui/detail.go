@@ -2,7 +2,6 @@ package ui
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -12,13 +11,13 @@ import (
 // openDetail entra no modo detalhe e dispara o carregamento do item.
 func (m Model) openDetail(it *focusItem) (tea.Model, tea.Cmd) {
 	m.mode = modeDetail
-	m.detailLoading = true
-	m.detailBody = ""
-	m.detailURL = m.itemURL(it)
+	m.detail.loading = true
+	m.detail.body = ""
+	m.detail.url = m.itemURL(it)
 	if it.mr != nil {
-		m.detailTitle = "MR " + it.mr.ShortRef()
+		m.detail.title = "MR " + it.mr.ShortRef()
 	} else {
-		m.detailTitle = it.issue.Key
+		m.detail.title = it.issue.Key
 	}
 	m.vp.GotoTop()
 	return m, m.fetchDetail(it)
@@ -34,7 +33,7 @@ func (m Model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+c":
 		return m, tea.Quit
 	case "o":
-		return m, openURLCmd(m.detailURL)
+		return m, openURLCmd(m.detail.url)
 	}
 	m.vp.SetContent(m.content())
 	var cmd tea.Cmd
@@ -52,32 +51,18 @@ func (m Model) wrapText(s string) string {
 	return lipgloss.NewStyle().Width(w).Render(s)
 }
 
-// linkedMRsText lista os MRs ligados a uma issue (pela #TAG no título).
+// linkedMRsText lista os MRs ligados a uma issue para o painel de detalhes.
 func (m Model) linkedMRsText(key string) string {
-	if m.gl == nil {
-		return ""
-	}
-	var parts []string
-	for i := range m.gl.OpenMRs {
-		if m.gl.OpenMRs[i].JiraKey() == key {
-			parts = append(parts, fmt.Sprintf("!%d aberto", m.gl.OpenMRs[i].IID))
-		}
-	}
-	for i := range m.gl.Merged {
-		if m.gl.Merged[i].JiraKey() == key {
-			parts = append(parts, fmt.Sprintf("!%d mergeado", m.gl.Merged[i].IID))
-		}
-	}
+	parts := m.linkedMRs(key)
 	if len(parts) == 0 {
 		return ""
 	}
 	return section.Render("🔗 MRs ligados") + "\n  " + strings.Join(parts, ", ")
 }
 
-// fetchDetail devolve um comando que busca descrição e comentários do item,
-// reusando os clients do Model (sem recriá-los a cada abertura).
+// fetchDetail devolve um comando que busca descrição e comentários do item.
 func (m Model) fetchDetail(it *focusItem) tea.Cmd {
-	gl, ji := m.glClient, m.jiClient
+	gl, ji := m.glSrc, m.jiSrc
 	if it.mr != nil {
 		mr := *it.mr
 		wrap := m.wrapText

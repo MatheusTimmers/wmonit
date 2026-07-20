@@ -69,22 +69,22 @@ func notifyAll(title string, bodies []string) tea.Cmd {
 // newGitlabAlerts atualiza o estado visto e devolve os textos dos todos
 // novos desde a última leitura (vazio na primeira, que só fixa a base).
 func (m *Model) newGitlabAlerts() []string {
-	if m.gl == nil {
+	if m.fetch.gl == nil {
 		return nil
 	}
-	if !m.glBaseline {
-		for _, t := range m.gl.Todos {
-			m.seenTodos[t.ID] = true
+	if !m.alert.glBaseline {
+		for _, t := range m.fetch.gl.Todos {
+			m.alert.seenTodos[t.ID] = true
 		}
-		m.glBaseline = true
+		m.alert.glBaseline = true
 		return nil
 	}
 	var out []string
-	for _, t := range m.gl.Todos {
-		if m.seenTodos[t.ID] {
+	for _, t := range m.fetch.gl.Todos {
+		if m.alert.seenTodos[t.ID] {
 			continue
 		}
-		m.seenTodos[t.ID] = true
+		m.alert.seenTodos[t.ID] = true
 		_, label := todoFace(t.ActionName)
 		out = append(out, label+": "+todoTarget(t))
 	}
@@ -99,33 +99,33 @@ func (m *Model) gitlabAlerts() tea.Cmd {
 // newJiraAlerts atualiza o estado visto e devolve os textos das issues
 // recém-atribuídas e das que mudaram de status.
 func (m *Model) newJiraAlerts() []string {
-	if m.ji == nil {
+	if m.fetch.ji == nil {
 		return nil
 	}
-	if !m.jiBaseline {
-		for _, is := range m.ji.Open {
-			m.issueStatus[is.Key] = is.Status
+	if !m.alert.jiBaseline {
+		for _, is := range m.fetch.ji.Open {
+			m.alert.issueStatus[is.Key] = is.Status
 		}
-		m.jiBaseline = true
+		m.alert.jiBaseline = true
 		return nil
 	}
 	var out []string
 	current := map[string]bool{}
-	for _, is := range m.ji.Open {
+	for _, is := range m.fetch.ji.Open {
 		current[is.Key] = true
-		switch prev, known := m.issueStatus[is.Key]; {
+		switch prev, known := m.alert.issueStatus[is.Key]; {
 		case !known:
 			out = append(out, "Nova issue atribuída: "+is.Key+" "+truncate(is.Summary, 80))
 		case prev != is.Status:
 			out = append(out, is.Key+" → "+is.Status)
 		}
-		m.issueStatus[is.Key] = is.Status
+		m.alert.issueStatus[is.Key] = is.Status
 	}
 	// Issues que saíram da lista (resolvidas/reatribuídas) são esquecidas,
 	// para uma reatribuição futura voltar a alertar.
-	for k := range m.issueStatus {
+	for k := range m.alert.issueStatus {
 		if !current[k] {
-			delete(m.issueStatus, k)
+			delete(m.alert.issueStatus, k)
 		}
 	}
 	return out
@@ -141,11 +141,11 @@ func (m *Model) jiraAlerts() tea.Cmd {
 // builds, menções e atribuições; reviews ficam na seção própria. "" quando
 // não há nada.
 func (m Model) viewNovidades() string {
-	if m.gl == nil {
+	if m.fetch.gl == nil {
 		return ""
 	}
 	var lines []string
-	for _, t := range m.gl.Todos {
+	for _, t := range m.fetch.gl.Todos {
 		if todoIsReviewish(t.ActionName) {
 			continue
 		}

@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -56,9 +58,6 @@ type user struct {
 	Username string `json:"username"`
 }
 
-// Todo é um item da lista de pendências do GitLab (/todos): algo que pede
-// sua atenção — review pedido, menção/comentário, build quebrado, etc. É a
-// fonte dos alertas proativos.
 type Todo struct {
 	ID         int       `json:"id"`
 	ActionName string    `json:"action_name"` // review_requested, mentioned, build_failed, assigned…
@@ -81,15 +80,12 @@ type Todo struct {
 type Summary struct {
 	Username      string
 	OpenMRs       []MR
-	Merged        []MR // mergeados desde o início do mês anterior
-	Closed        []MR // fechados sem merge desde o início do mês anterior
+	Merged        []MR
+	Closed        []MR
 	ReviewPending []MR
-	Todos         []Todo // pendências do GitLab (alertas proativos)
+	Todos         []Todo
 }
 
-// Mine junta os MRs do usuário (abertos, mergeados e fechados) sem
-// duplicar — a base para métricas por data de criação, onde o dia
-// trabalhado é o da abertura.
 func (s *Summary) Mine() []MR {
 	seen := map[string]bool{}
 	var out []MR
@@ -111,7 +107,6 @@ func (mr MR) MergedTime() time.Time {
 	return mr.UpdatedAt
 }
 
-// Títulos de MR seguem o padrão "breve descrição #TAG-JIRA [type]".
 var (
 	jiraKeyRe = regexp.MustCompile(`#([A-Za-z][A-Za-z0-9]*-\d+)`)
 	kindRe    = regexp.MustCompile(`\[([^\]]+)\]`)
@@ -184,7 +179,11 @@ func (c *Client) getResp(ctx context.Context, path string, q url.Values) (*http.
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
+		if msg := strings.TrimSpace(string(body)); msg != "" {
+			return nil, fmt.Errorf("GitLab %s: HTTP %d: %s", path, resp.StatusCode, msg)
+		}
 		return nil, fmt.Errorf("GitLab %s: HTTP %d", path, resp.StatusCode)
 	}
 	return resp, nil
@@ -199,8 +198,6 @@ func (c *Client) get(ctx context.Context, path string, q url.Values, out any) er
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
-// maxPages limita a paginação: 5 páginas de 100 dão folga para os dois
-// meses de MRs que o app olha, sem deixar uma consulta varrer tudo.
 const maxPages = 5
 
 // listMRs busca /merge_requests seguindo a paginação (X-Next-Page) — sem
@@ -209,7 +206,7 @@ func (c *Client) listMRs(ctx context.Context, q url.Values) ([]MR, error) {
 	q.Set("per_page", "100")
 	var all []MR
 	page := "1"
-	for i := 0; i < maxPages; i++ {
+	for range maxPages {
 		q.Set("page", page)
 		resp, err := c.getResp(ctx, "/merge_requests", q)
 		if err != nil {
@@ -242,9 +239,6 @@ func (c *Client) MRNotes(ctx context.Context, projectID, iid int) ([]Note, error
 	return notes, nil
 }
 
-// Todos devolve as pendências abertas do usuário (/todos?state=pending) —
-// review pedido, menções, builds quebrados, etc. A lista alimenta os
-// alertas proativos do wmonit.
 func (c *Client) Todos(ctx context.Context) ([]Todo, error) {
 	q := url.Values{"state": {"pending"}, "per_page": {"50"}}
 	var todos []Todo
@@ -267,41 +261,70 @@ func (c *Client) Fetch(ctx context.Context) (*Summary, error) {
 	now := time.Now()
 	prevMonthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local).AddDate(0, -1, 0)
 
-	var err error
-	if s.OpenMRs, err = c.listMRs(ctx, url.Values{
-		"scope": {"created_by_me"}, "state": {"opened"},
-	}); err != nil {
-		return nil, err
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var firstErr error
+	setErr := func(err error) {
+		if err == nil {
+			return
+		}
+		mu.Lock()
+		if firstErr == nil {
+			firstErr = err
+		}
+		mu.Unlock()
 	}
-	if s.Merged, err = c.listMRs(ctx, url.Values{
-		"scope":         {"created_by_me"},
-		"state":         {"merged"},
-		"updated_after": {prevMonthStart.Format(time.RFC3339)},
-	}); err != nil {
-		return nil, err
+
+	wg.Add(5)
+	go func() {
+		defer wg.Done()
+		mrs, err := c.listMRs(ctx, url.Values{"scope": {"created_by_me"}, "state": {"opened"}})
+		setErr(err)
+		s.OpenMRs = mrs
+	}()
+	go func() {
+		defer wg.Done()
+		mrs, err := c.listMRs(ctx, url.Values{
+			"scope":         {"created_by_me"},
+			"state":         {"merged"},
+			"updated_after": {prevMonthStart.Format(time.RFC3339)},
+		})
+		setErr(err)
+		s.Merged = mrs
+	}()
+	go func() {
+		defer wg.Done()
+		mrs, err := c.listMRs(ctx, url.Values{
+			"scope":         {"created_by_me"},
+			"state":         {"closed"},
+			"updated_after": {prevMonthStart.Format(time.RFC3339)},
+		})
+		setErr(err)
+		s.Closed = mrs
+	}()
+	go func() {
+		defer wg.Done()
+		mrs, err := c.listMRs(ctx, url.Values{
+			"scope":       {"all"},
+			"state":       {"opened"},
+			"reviewer_id": {fmt.Sprint(me.ID)},
+		})
+		setErr(err)
+		s.ReviewPending = mrs
+	}()
+	go func() {
+		defer wg.Done()
+		s.Todos, _ = c.Todos(ctx)
+	}()
+	wg.Wait()
+
+	if firstErr != nil {
+		return nil, firstErr
 	}
-	if s.Closed, err = c.listMRs(ctx, url.Values{
-		"scope":         {"created_by_me"},
-		"state":         {"closed"},
-		"updated_after": {prevMonthStart.Format(time.RFC3339)},
-	}); err != nil {
-		return nil, err
-	}
-	if s.ReviewPending, err = c.listMRs(ctx, url.Values{
-		"scope":       {"all"},
-		"state":       {"opened"},
-		"reviewer_id": {fmt.Sprint(me.ID)},
-	}); err != nil {
-		return nil, err
-	}
-	// Fila de review ordenada do mais parado para o menos (menos atividade
-	// recente primeiro) — o que está esperando review há mais tempo no topo.
+
 	sort.SliceStable(s.ReviewPending, func(i, j int) bool {
 		return s.ReviewPending[i].UpdatedAt.Before(s.ReviewPending[j].UpdatedAt)
 	})
-
-	// Pendências do GitLab para os alertas; falha aqui não derruba o resto.
-	s.Todos, _ = c.Todos(ctx)
 
 	return s, nil
 }

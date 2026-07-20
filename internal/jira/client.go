@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -80,6 +81,11 @@ func (c *Client) get(ctx context.Context, path string, q url.Values, out any) (i
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		// Lê um trecho do corpo — ajuda a diagnosticar token expirado etc.
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
+		if msg := strings.TrimSpace(string(body)); msg != "" {
+			return resp.StatusCode, fmt.Errorf("Jira %s: HTTP %d: %s", path, resp.StatusCode, msg)
+		}
 		return resp.StatusCode, fmt.Errorf("Jira %s: HTTP %d", path, resp.StatusCode)
 	}
 	return resp.StatusCode, json.NewDecoder(resp.Body).Decode(out)

@@ -13,13 +13,26 @@ import (
 
 	"github.com/timmers/wmonit/internal/claude"
 	"github.com/timmers/wmonit/internal/config"
-	"github.com/timmers/wmonit/internal/demo"
 	"github.com/timmers/wmonit/internal/gitlab"
 	"github.com/timmers/wmonit/internal/history"
 	"github.com/timmers/wmonit/internal/jira"
+	"github.com/timmers/wmonit/internal/pipeline"
 	"github.com/timmers/wmonit/internal/session"
 	"github.com/timmers/wmonit/internal/tasks"
 )
+
+// gitlabSource e jiraSource são os contratos mínimos que a UI usa das
+// fontes de dados. O *gitlab.Client/*jira.Client reais e as fontes do modo
+// demo os satisfazem — a UI não conhece qual é qual (injetadas por main).
+type gitlabSource interface {
+	Fetch(ctx context.Context) (*gitlab.Summary, error)
+	MRNotes(ctx context.Context, projectID, iid int) ([]gitlab.Note, error)
+}
+
+type jiraSource interface {
+	Fetch(ctx context.Context) (*jira.Summary, error)
+	IssueDetail(ctx context.Context, key string) (*jira.IssueDetail, error)
+}
 
 type tab int
 
@@ -33,11 +46,6 @@ const (
 	numTabs
 )
 
-// mode é o overlay de entrada ativo. Substitui um punhado de bools que
-// precisavam ser mutuamente exclusivos sem nada garantir isso: agora o
-// estado é impossível de ficar inconsistente e o dispatch é um só switch.
-// modeAdding e modeFiltering são overlays "inline" (a aba continua desenhada
-// por baixo, com o input embutido); os demais substituem o conteúdo.
 type mode int
 
 const (
@@ -53,11 +61,10 @@ const (
 const refreshEvery = 5 * time.Minute
 const reminderEvery = 30 * time.Second
 
-// gen marca de qual rodada de fetch a resposta veio. O refresh cancela o
-// ctx da rodada anterior (aborta as requisições de verdade); o gen descarta
-// a janela restante — respostas que completaram antes do cancelamento
-// (senão o contador de loading fica negativo e dados velhos sobrescrevem os
-// novos).
+// glMsg é a resposta de uma rodada de fetch do GitLab. gen marca de qual
+// rodada ela veio: o refresh cancela o ctx da rodada anterior, e o gen
+// descarta respostas que completaram antes do cancelamento (senão o
+// contador de loading fica negativo e dados velhos sobrescrevem os novos).
 type glMsg struct {
 	gen int
 	sum *gitlab.Summary
@@ -83,79 +90,108 @@ type Model struct {
 	store *tasks.Store
 	hist  *history.Store
 	sess  *session.Store
-	demo  bool // dados inventados, sem rede (flag --demo)
+	badge string // selo do rodapé (ex.: "🧪 DEMO"); vazio no modo normal
 
-	// Clients reaproveitados entre refreshes — sem isso o cache de
-	// metadados do Jira (campos, prioridades) não sobreviveria a cada busca.
-	glClient *gitlab.Client
-	jiClient *jira.Client
+	glSrc  gitlabSource
+	jiSrc  jiraSource
+	runner *pipeline.Runner
 
-	mode mode // overlay de entrada ativo (normal, adding, describing…)
+	mode mode
+	tab  tab
 
-	// Estado das sessões de trabalho
-	descInput   textarea.Model
-	pickOptions []string
-	pickCursor  int
-	pending     *pendingSession
-	sessInfo    string // última mensagem de status das sessões
-	progress    map[string]claude.Progress
-	handles     map[string]*claude.Handle      // execuções vivas, p/ cancelar
-	taskCtx     map[string]*claude.TaskContext // contexto por sessão (1 busca por pipeline)
-	ticking     bool                           // cadeia de polling das sessões viva
+	fetch  fetchState
+	alert  alertState
+	detail detailState
+	sui    sessionUI
 
-	tab     tab
-	gl      *gitlab.Summary
-	mine    []gitlab.MR
-	glErr   error
-	ji      *jira.Summary
-	jiErr   error
-	loading int
-
-	fetchGen    int                // rodada atual de fetch; respostas de rodadas velhas são descartadas
-	fetchCtx    context.Context    // ctx da rodada atual; cancelado quando outra começa
-	fetchCancel context.CancelFunc
-
-	cursor int
-	addErr string // erro da última tentativa de adicionar tarefa (vencimento inválido)
-	input  textinput.Model
+	cursor  int
+	addErr  string
+	saveErr string // última falha ao gravar tarefas/sessões, mostrada no rodapé
+	input   textinput.Model
 
 	filter      string
 	filterInput textinput.Model
 
-	detailLoading bool
-	detailTitle   string
-	detailURL     string
-	detailBody    string
-
-	spin    spinner.Model
-	vp      viewport.Model
-	updated time.Time
-
-	notified map[string]bool
-
-	seenTodos   map[int]bool
-	issueStatus map[string]string
-	glBaseline  bool
-	jiBaseline  bool
+	spin spinner.Model
+	vp   viewport.Model
 
 	width, height int
 }
 
-func New(cfg config.Config, store *tasks.Store, demo bool) Model {
+// fetchState guarda a rodada de fetch do GitLab/Jira e seus resultados. gen
+// identifica a rodada, para descartar respostas de uma já substituída.
+type fetchState struct {
+	gen     int
+	ctx     context.Context
+	cancel  context.CancelFunc
+	loading int
+	gl      *gitlab.Summary
+	glErr   error
+	ji      *jira.Summary
+	jiErr   error
+	mine    []gitlab.MR
+	updated time.Time
+}
+
+// alertState guarda o que já foi alertado, para não repetir notificações.
+type alertState struct {
+	notified    map[string]bool
+	seenTodos   map[int]bool
+	issueStatus map[string]string
+	glBaseline  bool
+	jiBaseline  bool
+}
+
+// detailState guarda o painel de detalhes (issue/MR/sessão/diff).
+type detailState struct {
+	loading bool
+	title   string
+	url     string
+	body    string
+}
+
+// sessionUI guarda o estado de tela das sessões de trabalho.
+type sessionUI struct {
+	descInput   textarea.Model
+	pending     *pendingSession
+	pickOptions []string
+	pickCursor  int
+	sessInfo    string
+	progress    map[string]claude.Progress
+	ticking     bool
+}
+
+func New(cfg config.Config, store *tasks.Store, hist *history.Store, sess *session.Store, gl gitlabSource, ji jiraSource, badge string) Model {
 	ti := textinput.New()
 	ti.Placeholder = "descrição · data @today/@tomorrow/@2026-06-15 · hora @today 15:00 · prioridade !alta/!critica/!media/!baixa"
+
 	fi := textinput.New()
 	fi.Placeholder = "filtrar por chave, título ou status"
+
 	sp := spinner.New(spinner.WithSpinner(spinner.Dot))
+
 	ta := textarea.New()
 	ta.Placeholder = "explique o que deve ser feito nesta tarefa (contexto, restrições, o que validar)…"
 	ta.SetHeight(8)
-	hist, _ := history.Load() // sem histórico ainda não é erro fatal
-	sess, _ := session.Load() // mesmo com erro o store volta utilizável
-	glClient := gitlab.New(cfg.GitLab.URL, cfg.GitLab.Token)
-	jiClient := jira.New(cfg.Jira.URL, cfg.Jira.Auth, cfg.Jira.Email, cfg.Jira.Token, cfg.Jira.ComplexityField)
+
 	ctx, cancel := context.WithCancel(context.Background())
-	return Model{cfg: cfg, store: store, hist: hist, sess: sess, demo: demo, glClient: glClient, jiClient: jiClient, fetchCtx: ctx, fetchCancel: cancel, input: ti, filterInput: fi, descInput: ta, spin: sp, vp: viewport.New(80, 20), loading: 2, notified: map[string]bool{}, seenTodos: map[int]bool{}, issueStatus: map[string]string{}, progress: map[string]claude.Progress{}, handles: map[string]*claude.Handle{}, taskCtx: map[string]*claude.TaskContext{}}
+	runner := pipeline.New(cfg.Claude, gl, ji)
+
+	return Model{
+		cfg: cfg, store: store, hist: hist, sess: sess, badge: badge,
+		glSrc: gl, jiSrc: ji, runner: runner,
+		input: ti, filterInput: fi, spin: sp, vp: viewport.New(80, 20),
+		fetch: fetchState{ctx: ctx, cancel: cancel, loading: 2},
+		alert: alertState{
+			notified:    map[string]bool{},
+			seenTodos:   map[int]bool{},
+			issueStatus: map[string]string{},
+		},
+		sui: sessionUI{
+			descInput: ta,
+			progress:  map[string]claude.Progress{},
+		},
+	}
 }
 
 func (m Model) Init() tea.Cmd {
@@ -170,14 +206,12 @@ func reminderTick() tea.Cmd {
 	return tea.Tick(reminderEvery, func(t time.Time) tea.Msg { return reminderMsg(t) })
 }
 
-// checkReminders usa receiver por ponteiro porque grava em m.notified; por
-// valor só funcionava por o map ser referência — frágil para o próximo campo.
 func (m *Model) checkReminders() tea.Cmd {
 	now := time.Now()
 	today := now.Format("2006-01-02")
 	var cmds []tea.Cmd
 	for _, t := range m.store.Tasks {
-		if t.Done || t.DueTime == "" || t.Due != today {
+		if t.Done || t.DueTime == "" || t.Due > today {
 			continue
 		}
 
@@ -196,11 +230,11 @@ func (m *Model) checkReminders() tea.Cmd {
 		}
 
 		key := t.Due + " " + t.DueTime + " " + t.Text
-		if m.notified[key] {
+		if m.alert.notified[key] {
 			continue
 		}
 
-		m.notified[key] = true
+		m.alert.notified[key] = true
 		cmds = append(cmds, notifyCmd("wmonit — lembrete", t.Text))
 	}
 	if len(cmds) == 0 {
@@ -210,7 +244,7 @@ func (m *Model) checkReminders() tea.Cmd {
 }
 
 func (m *Model) recordToday() {
-	if m.hist == nil || m.gl == nil || m.ji == nil {
+	if m.hist == nil || m.fetch.gl == nil || m.fetch.ji == nil {
 		return
 	}
 	now := time.Now()
@@ -224,24 +258,18 @@ func (m *Model) recordToday() {
 	}
 	if m.hist.Upsert(history.Day{
 		Date:   today,
-		MRs:    len(mergedIn(m.gl.Merged, dayStart, now)),
-		Issues: len(resolvedIn(m.ji.Resolved, today, today)),
+		MRs:    len(mergedIn(m.fetch.gl.Merged, dayStart, now)),
+		Issues: len(resolvedIn(m.fetch.ji.Resolved, today, today)),
 		Tasks:  tsk,
 	}) {
-		m.hist.Save() // só grava quando o resumo do dia mudou
+		m.hist.Save()
 	}
 }
 
 func (m Model) fetchAll() tea.Cmd {
-	gen := m.fetchGen
-	if m.demo {
-		return tea.Batch(
-			func() tea.Msg { return glMsg{gen, demo.GitLab(), nil} },
-			func() tea.Msg { return jiMsg{gen, demo.Jira(), nil} },
-		)
-	}
-	gl, ji := m.glClient, m.jiClient
-	ctx := m.fetchCtx
+	gen := m.fetch.gen
+	gl, ji := m.glSrc, m.jiSrc
+	ctx := m.fetch.ctx
 	return tea.Batch(
 		func() tea.Msg {
 			s, err := gl.Fetch(ctx)
@@ -254,13 +282,24 @@ func (m Model) fetchAll() tea.Cmd {
 	)
 }
 
+// save registra no rodapé quando a gravação de tarefas/sessões falha —
+// perder uma tarefa em silêncio é o pior caso do app.
+func (m *Model) save(err error) {
+	if err != nil {
+		m.saveErr = "não gravou: " + err.Error()
+		return
+	}
+	m.saveErr = ""
+}
+
 func (m *Model) refresh() tea.Cmd {
-	// Aborta as requisições da rodada anterior em vez de só ignorar as
-	// respostas — sem isso elas seguiriam vivas até o timeout de 15s.
-	m.fetchCancel()
-	m.fetchCtx, m.fetchCancel = context.WithCancel(context.Background())
-	m.fetchGen++
-	m.loading = 2
+	// Cancela o ctx da rodada anterior: aborta as requisições de verdade em
+	// vez de só ignorar as respostas (senão elas seguem vivas até o timeout
+	// de 15s).
+	m.fetch.cancel()
+	m.fetch.ctx, m.fetch.cancel = context.WithCancel(context.Background())
+	m.fetch.gen++
+	m.fetch.loading = 2
 	return m.fetchAll()
 }
 
@@ -269,7 +308,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.input.Width = max(20, msg.Width-10)
-		m.descInput.SetWidth(max(40, msg.Width-12))
+		m.sui.descInput.SetWidth(max(40, msg.Width-12))
 		m.vp.Width = max(36, m.width-8)
 		m.vp.Height = max(5, m.height-5)
 		return m, nil
@@ -286,78 +325,75 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.checkReminders(), reminderTick())
 
 	case detailMsg:
-		m.detailLoading = false
+		m.detail.loading = false
 		if msg.err != nil {
-			m.detailBody = errStyle.Render(msg.err.Error())
+			m.detail.body = errStyle.Render(msg.err.Error())
 		} else {
-			m.detailBody = msg.body
+			m.detail.body = msg.body
 		}
 		m.vp.GotoTop()
 		return m, nil
 
 	case glMsg:
-		if msg.gen != m.fetchGen {
+		if msg.gen != m.fetch.gen {
 			return m, nil // resposta de uma rodada já substituída
 		}
-		m.loading--
-		m.gl, m.glErr = msg.sum, msg.err
-		m.mine = nil
-		if m.gl != nil {
-			m.mine = m.gl.Mine()
+		m.fetch.loading--
+		m.fetch.gl, m.fetch.glErr = msg.sum, msg.err
+		m.fetch.mine = nil
+		if m.fetch.gl != nil {
+			m.fetch.mine = m.fetch.gl.Mine()
 		}
-		m.updated = time.Now()
+		m.fetch.updated = time.Now()
 		m.recordToday()
 		return m, m.gitlabAlerts()
 
 	case jiMsg:
-		if msg.gen != m.fetchGen {
+		if msg.gen != m.fetch.gen {
 			return m, nil
 		}
-		m.loading--
-		m.ji, m.jiErr = msg.sum, msg.err
-		m.updated = time.Now()
+		m.fetch.loading--
+		m.fetch.ji, m.fetch.jiErr = msg.sum, msg.err
+		m.fetch.updated = time.Now()
 		m.recordToday()
 		return m, m.jiraAlerts()
 
 	case sessCreatedMsg:
 		if msg.err != nil {
-			m.sessInfo = errStyle.Render(msg.err.Error())
+			m.sui.sessInfo = errStyle.Render(msg.err.Error())
 			return m, nil
 		}
 		m.sess.Add(msg.sess)
-		m.sess.Save()
-		m.sessInfo = okStyle.Render("sessão criada: " + msg.sess.Key + " em " + msg.sess.Worktree)
+		m.save(m.sess.Save())
+		m.sui.sessInfo = okStyle.Render("sessão criada: " + msg.sess.Key + " em " + msg.sess.Worktree)
 		// Worktree pronto → o pipeline (plan → dev → review) já inicia.
-		if s := m.sess.Find(msg.sess.ID); s != nil {
-			return m.startRun(s)
-		}
-		return m, nil
+		return m.startRun(msg.sess.ID)
 
 	case sessTickMsg:
 		m.pollProgress()
 		if m.anyRunning() {
 			return m, sessTick()
 		}
-		m.ticking = false
+		m.sui.ticking = false
 		return m, nil
 
 	case sessFinishedMsg:
-		delete(m.handles, msg.id)
-		if msg.ctx != nil {
-			// Contexto da tarefa buscado nesta fase: as próximas reutilizam.
-			m.taskCtx[msg.id] = msg.ctx
+		sess, ok := m.sess.Get(msg.id)
+		if !ok {
+			return m, nil
 		}
-		if s := m.sess.Find(msg.id); s != nil {
-			if s.Status == session.StatusCancelled {
-				m.sess.Save()
-				return m, nil
-			}
+		if sess.Status == session.StatusCancelled {
+			m.save(m.sess.Save())
+			return m, nil
+		}
+		var title, body string
+		m.sess.Update(msg.id, func(s *session.Session) {
 			s.Prompt = msg.prompt
 			// O log final traz o session_id do Claude (para retomar a fase
 			// certa depois) e o resumo da fase.
 			if s.LogFile != "" {
 				if p, err := claude.ReadProgress(s.LogFile); err == nil {
-					m.progress[s.ID] = p
+					m.sui.progress[s.ID] = p
 					if p.SessionID != "" {
 						s.SetClaudeID(s.Phase, p.SessionID)
 					}
@@ -368,8 +404,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			now := time.Now()
 			s.Finished = &now
-			title := "wmonit — sessão " + s.Key
-			var body string
+			title = "wmonit — sessão " + s.Key
 			switch {
 			case msg.err != nil:
 				s.Status = session.StatusFailed
@@ -386,46 +421,45 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				s.Status = session.StatusDone
 				body = "review concluído — veja o veredito (enter)"
 			}
-			m.sess.Save()
-			return m, notifyCmd(title, body)
-		}
-		return m, nil
+		})
+		m.save(m.sess.Save())
+		return m, notifyCmd(title, body)
 
 	case interactiveDoneMsg:
 		if msg.err != nil {
-			m.sessInfo = errStyle.Render("claude interativo: " + msg.err.Error())
-		} else if s := m.sess.Find(msg.id); s != nil {
-			if s.Status == session.StatusPending {
-				s.Status = session.StatusDone
-				m.sess.Save()
+			m.sui.sessInfo = errStyle.Render("claude interativo: " + msg.err.Error())
+		} else if sess, ok := m.sess.Get(msg.id); ok {
+			if sess.Status == session.StatusPending {
+				m.sess.Update(msg.id, func(s *session.Session) { s.Status = session.StatusDone })
+				m.save(m.sess.Save())
 			}
-			m.sessInfo = dim.Render("sessão interativa de " + s.Key + " encerrada — revise com v")
+			m.sui.sessInfo = dim.Render("sessão interativa de " + sess.Key + " encerrada — revise com v")
 		}
 		return m, nil
 
 	case editorClosedMsg:
 		// Abrir o worktree no editor não devolve conteúdo; só reportamos erro.
 		if msg.err != nil {
-			m.sessInfo = errStyle.Render("editor: " + msg.err.Error())
+			m.sui.sessInfo = errStyle.Render("editor: " + msg.err.Error())
 		}
 		return m, nil
 
 	case descEditedMsg:
 		// Voltou do editor da explicação: traz o texto editado pro textbox.
 		if msg.err != nil {
-			m.sessInfo = errStyle.Render("editor: " + msg.err.Error())
+			m.sui.sessInfo = errStyle.Render("editor: " + msg.err.Error())
 		} else {
-			m.descInput.SetValue(strings.TrimRight(msg.text, "\n"))
+			m.sui.descInput.SetValue(strings.TrimRight(msg.text, "\n"))
 		}
 		if m.mode == modeDescribing {
-			m.descInput.Focus()
+			m.sui.descInput.Focus()
 			return m, textarea.Blink
 		}
 		return m, nil
 
 	case sessActionMsg:
 		if msg.err != nil {
-			m.sessInfo = errStyle.Render(msg.err.Error())
+			m.sui.sessInfo = errStyle.Render(msg.err.Error())
 			return m, nil
 		}
 		if msg.remove {
@@ -438,13 +472,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.cursor >= len(m.sess.Sessions) && m.cursor > 0 {
 				m.cursor--
 			}
-		} else if s := m.sess.Find(msg.id); s != nil && msg.status != "" {
-			s.Status = msg.status
+		} else if msg.status != "" {
+			m.sess.Update(msg.id, func(s *session.Session) { s.Status = msg.status })
 		}
 		// Estado de runtime da sessão que saiu de cena não fica para trás.
-		delete(m.progress, msg.id)
-		delete(m.taskCtx, msg.id)
-		m.sess.Save()
+		delete(m.sui.progress, msg.id)
+		m.runner.Forget(msg.id)
+		m.save(m.sess.Save())
 		return m, nil
 
 	case tea.KeyMsg:
@@ -477,7 +511,7 @@ func (m Model) updateAdding(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.addErr = err.Error()
 				return m, nil
 			}
-			m.store.Save()
+			m.save(m.store.Save())
 		}
 		m.mode = modeNormal
 		m.addErr = ""
@@ -577,13 +611,13 @@ func (m Model) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.scrollToCursor()
 		case " ", "x":
 			m.store.ToggleAt(m.cursor)
-			m.store.Save()
+			m.save(m.store.Save())
 		case "d":
 			m.store.DeleteAt(m.cursor)
 			if m.cursor >= len(m.store.Tasks) && m.cursor > 0 {
 				m.cursor--
 			}
-			m.store.Save()
+			m.save(m.store.Save())
 		}
 		return m, nil
 	}
@@ -644,35 +678,28 @@ func (m Model) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// scrollToItem garante que o item selecionado nas abas GitLab/Jira fique
-// visível no viewport.
+// scrollTo carrega content no viewport e rola o mínimo para deixar a linha
+// visível.
+func (m *Model) scrollTo(content string, line int) {
+	m.vp.SetContent(content)
+	if line < m.vp.YOffset {
+		m.vp.SetYOffset(line)
+	} else if line >= m.vp.YOffset+m.vp.Height {
+		m.vp.SetYOffset(line - m.vp.Height + 1)
+	}
+}
+
+// scrollToItem mantém visível o item selecionado nas abas GitLab/Jira.
 func (m *Model) scrollToItem() {
 	content, sel := renderRows(m.currentRows(), m.cursor)
-	m.vp.SetContent(content)
-	if sel < m.vp.YOffset {
-		m.vp.SetYOffset(sel)
-	} else if sel >= m.vp.YOffset+m.vp.Height {
-		m.vp.SetYOffset(sel - m.vp.Height + 1)
-	}
+	m.scrollTo(content, sel)
 }
 
-// scrollToSession garante que a sessão selecionada fique visível —
-// sessões ocupam mais de uma linha, então usa a linha real do item.
+// scrollToSession mantém visível a sessão selecionada — cada sessão ocupa
+// mais de uma linha, então usa a linha real do item, não o índice do cursor.
 func (m *Model) scrollToSession() {
 	content, sel := m.viewSessoes()
-	m.vp.SetContent(content)
-	if sel < m.vp.YOffset {
-		m.vp.SetYOffset(sel)
-	} else if sel >= m.vp.YOffset+m.vp.Height {
-		m.vp.SetYOffset(sel - m.vp.Height + 1)
-	}
+	m.scrollTo(content, sel)
 }
 
-func (m *Model) scrollToCursor() {
-	m.vp.SetContent(m.content())
-	if m.cursor < m.vp.YOffset {
-		m.vp.SetYOffset(m.cursor)
-	} else if m.cursor >= m.vp.YOffset+m.vp.Height {
-		m.vp.SetYOffset(m.cursor - m.vp.Height + 1)
-	}
-}
+func (m *Model) scrollToCursor() { m.scrollTo(m.content(), m.cursor) }

@@ -30,11 +30,12 @@ func TestStoreRoundTrip(t *testing.T) {
 		t.Fatal("HasActiveFor deveria achar sessão pendente")
 	}
 
-	got := s2.Find(s2.Sessions[0].ID)
-	if got == nil {
-		t.Fatal("Find não achou a sessão")
+	if _, ok := s2.Get(s2.Sessions[0].ID); !ok {
+		t.Fatal("Get não achou a sessão")
 	}
-	got.Status = StatusCompleted
+	if !s2.Update(s2.Sessions[0].ID, func(x *Session) { x.Status = StatusCompleted }) {
+		t.Fatal("Update não achou a sessão")
+	}
 	if s2.HasActiveFor("ABC-123") {
 		t.Fatal("sessão completed não é ativa")
 	}
@@ -57,12 +58,15 @@ func TestNewID(t *testing.T) {
 
 func TestLogDir(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("XDG_DATA_HOME", dir)
-	want := filepath.Join(dir, "wmonit", "logs")
-	if LogDir() != want {
-		t.Fatalf("LogDir = %s, esperado %s", LogDir(), want)
+	s, err := LoadFrom(dir)
+	if err != nil {
+		t.Fatal(err)
 	}
-	_ = os.MkdirAll(LogDir(), 0o755)
+	want := filepath.Join(dir, "logs")
+	if s.LogDir() != want {
+		t.Fatalf("LogDir = %s, esperado %s", s.LogDir(), want)
+	}
+	_ = os.MkdirAll(s.LogDir(), 0o755)
 }
 
 func TestPlan(t *testing.T) {

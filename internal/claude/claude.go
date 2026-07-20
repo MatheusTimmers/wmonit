@@ -41,12 +41,12 @@ func (h *Handle) Killed() bool {
 }
 
 type Opts struct {
-	Bin     string // binário do Claude Code
-	Dir     string // diretório de trabalho (worktree da sessão)
-	Prompt  string // prompt da fase — vai por stdin, sem limite de argv
-	LogFile string // onde gravar stdout (stream-json) e stderr
-	Model   string // alias ou id; vazio = default do CLI
-	Resume  string // session_id para retomar uma conversa; vazio = nova
+	Bin            string // binário do Claude Code
+	Dir            string // diretório de trabalho (worktree da sessão)
+	Prompt         string // prompt da fase — vai por stdin, sem limite de argv
+	LogFile        string // onde gravar stdout (stream-json) e stderr
+	Model          string // alias ou id; vazio = default do CLI
+	Resume         string // session_id para retomar uma conversa; vazio = nova
 	PermissionMode string
 }
 
