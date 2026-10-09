@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -381,5 +382,43 @@ func TestCreateIssueWorkspaceOnlyContext(t *testing.T) {
 	}
 	if _, ok := hub.Poll(h).WorkspaceByLabel(s.Label); ok {
 		t.Error("workspace deveria ter sido fechado")
+	}
+}
+
+func TestPickerScrollsWithCursor(t *testing.T) {
+	sources := t.TempDir()
+	for i := 0; i < 60; i++ {
+		if err := os.MkdirAll(filepath.Join(sources, fmt.Sprintf("repo-%02d", i), ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m, _ := newWorkspaceModel(t, config.Config{Claude: config.Claude{SourcesDir: sources}}, nil)
+	mm, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 20})
+	m = mm.(Model)
+	m, _ = press(t, m, runes("n"))
+	if m.mode != modePicking {
+		t.Fatalf("mode = %v", m.mode)
+	}
+	visible := func(name string) bool { return strings.Contains(m.View(), name) }
+	if !visible("repo-00") || visible("repo-40") {
+		t.Fatal("começo da lista deveria estar na tela, o fim não")
+	}
+	for i := 0; i < 40; i++ {
+		m, _ = press(t, m, runes("j"))
+	}
+	if !visible("repo-40") || visible("repo-00") {
+		t.Fatalf("a tela deveria acompanhar o cursor (offset %d)", m.vp.YOffset)
+	}
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyEnd})
+	if m.sui.pick.cursor != 59 || !visible("repo-59") {
+		t.Fatalf("end: cursor %d", m.sui.pick.cursor)
+	}
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyPgUp})
+	if m.sui.pick.cursor >= 59 || !visible(fmt.Sprintf("repo-%02d", m.sui.pick.cursor)) {
+		t.Fatalf("pgup: cursor %d", m.sui.pick.cursor)
+	}
+	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyHome})
+	if m.sui.pick.cursor != 0 || !visible("repo-00") {
+		t.Fatalf("home: cursor %d", m.sui.pick.cursor)
 	}
 }

@@ -265,7 +265,7 @@ func (m Model) footer(vp interface{ ScrollPercent() float64 }) string {
 	if m.mode == modeDescribing {
 		help = "ctrl+d envia/cria · ctrl+n só cria · ctrl+r alterna dev/revisão · ctrl+e editor · esc cancela"
 	} else if m.mode == modePicking {
-		help = "j/k escolher · enter confirmar · esc cancelar"
+		help = "j/k escolher · pgup/pgdn página · home/end início/fim · enter confirmar · esc cancelar"
 	} else if m.mode == modeDetail {
 		help = "esc/q voltar · o abrir no navegador · j/k rolar"
 	} else if m.mode == modeReport {

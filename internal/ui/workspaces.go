@@ -460,6 +460,7 @@ func (m Model) pickServiceFor(p *pendingSession) (tea.Model, tea.Cmd) {
 	m.sui.info = ""
 	m.mode = modePicking
 	m.vp.GotoTop()
+	m.scrollToPick()
 	return m, nil
 }
 
@@ -561,15 +562,17 @@ func (m Model) updatePick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.sui.pending = nil
 		return m, nil
 	case "j", "down":
-		if pk.cursor < len(pk.values)-1 {
-			pk.cursor++
-		}
-		return m, nil
+		return m.movePick(1)
 	case "k", "up":
-		if pk.cursor > 0 {
-			pk.cursor--
-		}
-		return m, nil
+		return m.movePick(-1)
+	case "pgdown", "ctrl+d":
+		return m.movePick(max(1, m.vp.Height-pickHeader))
+	case "pgup", "ctrl+u":
+		return m.movePick(-max(1, m.vp.Height-pickHeader))
+	case "home", "g":
+		return m.movePick(-len(pk.values))
+	case "end", "G":
+		return m.movePick(len(pk.values))
 	case "enter":
 		if len(pk.values) == 0 {
 			m.mode = modeNormal
@@ -589,6 +592,23 @@ func (m Model) updatePick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+const pickHeader = 2
+
+func (m Model) movePick(delta int) (tea.Model, tea.Cmd) {
+	pk := &m.sui.pick
+	pk.cursor = min(max(pk.cursor+delta, 0), max(len(pk.values)-1, 0))
+	m.scrollToPick()
+	return m, nil
+}
+
+func (m *Model) scrollToPick() {
+	line := pickHeader + m.sui.pick.cursor
+	if line == pickHeader {
+		line = 0
+	}
+	m.scrollTo(m.viewPick(), line)
 }
 
 func (m Model) viewPick() string {
