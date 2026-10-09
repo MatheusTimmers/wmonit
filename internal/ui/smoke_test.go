@@ -22,7 +22,7 @@ func TestSmokeRenderAllTabs(t *testing.T) {
 	hist, _ := history.LoadFrom(dir)
 	sess, _ := session.LoadFrom(dir)
 
-	m := New(config.Config{}, store, hist, sess, demo.GitLabSource{}, demo.JiraSource{}, "🧪 DEMO")
+	m := New(config.Config{}, store, hist, sess, demo.GitLabSource{}, demo.JiraSource{}, demo.AgentsSource{}, "🧪 DEMO")
 	mm, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = mm.(Model)
 	m.fetch.gl = demo.GitLab()

@@ -46,7 +46,7 @@ func taskPrioBadge(p string) string {
 	return ""
 }
 
-var tabNames = []string{"Hoje", "Desempenho", "GitLab", "Jira", "Tarefas", "Sessões"}
+var tabNames = []string{"Hoje", "Desempenho", "GitLab", "Jira", "Tarefas", "Agentes"}
 
 var ptMonths = [...]string{"jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"}
 
@@ -216,8 +216,8 @@ func (m Model) content() string {
 		return s
 	case tabTarefas:
 		return m.viewTarefas()
-	case tabSessoes:
-		s, _ := m.viewSessoes()
+	case tabAgentes:
+		s, _ := m.viewAgentes()
 		return s
 	}
 	return ""
@@ -263,7 +263,7 @@ func (m Model) footer(vp interface{ ScrollPercent() float64 }) string {
 	}
 	help := "tab/1-6 abas · g relatório do dia · j/k rolar · r atualizar · q sair"
 	if m.mode == modeDescribing {
-		help = "ctrl+d inicia · ctrl+r alterna dev/revisão · esc cancela"
+		help = "ctrl+d lança o agent · ctrl+r alterna dev/revisão · ctrl+e editor · esc cancela"
 	} else if m.mode == modePickingService {
 		help = "j/k escolher serviço · enter confirmar · esc cancelar"
 	} else if m.mode == modeDetail {
@@ -271,9 +271,9 @@ func (m Model) footer(vp interface{ ScrollPercent() float64 }) string {
 	} else if m.mode == modeReport {
 		help = "esc/q voltar · j/k rolar · r atualizar"
 	} else if m.tab == tabGitLab || m.tab == tabJira {
-		help = "j/k selecionar · enter detalhes · o navegador · c sessão · / buscar · r atualizar · q sair"
-	} else if m.tab == tabSessoes {
-		help = "s iniciar/aprovar/corrigir · enter resultado · t interativo · v diff · e editor · f concluir · x cancelar · d/D remover"
+		help = "j/k selecionar · enter detalhes · o navegador · c agent · / buscar · r atualizar · q sair"
+	} else if m.tab == tabAgentes {
+		help = "n novo · enter detalhes · a conversa (aba nova; A aqui) · i/I haiku analisa · s lançar/retomar · x parar · v diff · e code · f concluir · d/D remover · o link"
 	} else if m.tab == tabTarefas {
 		if m.mode == modeAdding {
 			help = "enter salvar · esc cancelar"

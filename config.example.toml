@@ -33,17 +33,26 @@ complexity_field = ""
 weekly_mrs = 0
 weekly_issues = 0
 
-# Sessões de trabalho com o Claude Code (aba Sessões, tecla 'c').
+# Agents do Claude Code em background (aba Agentes; 'c' numa issue/MR, 'n' livre).
 [claude]
 sources_dir = "c:/Fontes"  # pasta com os serviços (cada subpasta é um repo git)
 worktrees_dir = ""         # vazio = <sources_dir>/.worktrees
 bin = "claude"             # binário do Claude Code
 branch_prefix = ""         # prefixo da branch de sessões de issue (ex.: "feature/"); vazio = só a chave (ABC-123)
-# Modo de permissão das execuções headless (--permission-mode). Em modo
-# headless ninguém aprova ferramenta, então o default é "bypassPermissions"
-# (o worktree é isolado, mas o agente ganha bash livre). "acceptEdits" ou
-# "default" são mais seguros, porém build/commit podem ser negados.
-permission_mode = "bypassPermissions"
+# Modelo e modo de permissão dos agents (--model / --permission-mode). Vazio =
+# os do seu settings.json. O agent roda em background e você entra na
+# conversa com 'a' quando ele pedir permissão ou tiver dúvida.
+model = ""
+permission_mode = ""
+
+# Editor e terminal. bin: editor da explicação (ctrl+e; vazio = $VISUAL/
+# $EDITOR/nvim). workspace: abre a pasta do agent (tecla e). terminal: onde a
+# tecla 'a' abre a conversa ("wt" = aba nova do Windows Terminal; vazio = na
+# própria TUI).
+[editor]
+bin = ""
+workspace = "code"
+terminal = "wt"
 
 # Instruções extras por serviço, anexadas ao prompt de cada sessão.
 # [claude.templates]

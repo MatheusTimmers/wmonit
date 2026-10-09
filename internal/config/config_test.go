@@ -18,14 +18,10 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Jira.Auth != "bearer" {
 		t.Errorf("Jira.Auth = %q, esperado %q", cfg.Jira.Auth, "bearer")
 	}
-	if cfg.Claude.PermissionMode != "bypassPermissions" {
-		t.Errorf("Claude.PermissionMode = %q, esperado %q", cfg.Claude.PermissionMode, "bypassPermissions")
-	}
-	wantModels := map[string]string{"plan": "opus", "dev": "sonnet", "review": "opus"}
-	for phase, want := range wantModels {
-		if got := cfg.Claude.Models[phase]; got != want {
-			t.Errorf("Claude.Models[%q] = %q, esperado %q", phase, got, want)
-		}
+	// Os agents rodam em background e o usuário entra com attach: sem
+	// forçar modo de permissão nem modelo, valem os do settings.json dele.
+	if cfg.Claude.PermissionMode != "" || cfg.Claude.Model != "" {
+		t.Errorf("Claude.PermissionMode/Model = %q/%q, esperado vazio", cfg.Claude.PermissionMode, cfg.Claude.Model)
 	}
 }
 

@@ -11,12 +11,11 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/timmers/wmonit/internal/claude"
+	"github.com/timmers/wmonit/internal/agents"
 	"github.com/timmers/wmonit/internal/config"
 	"github.com/timmers/wmonit/internal/gitlab"
 	"github.com/timmers/wmonit/internal/history"
 	"github.com/timmers/wmonit/internal/jira"
-	"github.com/timmers/wmonit/internal/pipeline"
 	"github.com/timmers/wmonit/internal/session"
 	"github.com/timmers/wmonit/internal/tasks"
 )
@@ -42,7 +41,7 @@ const (
 	tabGitLab
 	tabJira
 	tabTarefas
-	tabSessoes
+	tabAgentes
 	numTabs
 )
 
@@ -92,9 +91,9 @@ type Model struct {
 	sess  *session.Store
 	badge string // selo do rodapé (ex.: "🧪 DEMO"); vazio no modo normal
 
-	glSrc  gitlabSource
-	jiSrc  jiraSource
-	runner *pipeline.Runner
+	glSrc gitlabSource
+	jiSrc jiraSource
+	ag    agentSource
 
 	mode mode
 	tab  tab
@@ -150,18 +149,27 @@ type detailState struct {
 	body    string
 }
 
-// sessionUI guarda o estado de tela das sessões de trabalho.
+// sessionUI guarda o estado de tela da aba Agentes: o fluxo de criação e a
+// última leitura do agent view.
 type sessionUI struct {
 	descInput   textarea.Model
 	pending     *pendingSession
 	pickOptions []string
 	pickCursor  int
+	confirm     string // f/d pendente de confirmação: "<tecla>:<linha>"
 	sessInfo    string
-	progress    map[string]claude.Progress
-	ticking     bool
+
+	agentsGen int
+	agentsErr string
+	live      []agents.Live
+	beats     map[string]agents.Heartbeat
+	trans     map[string]agents.Transcript
+	busy      map[string]bool // sessão do wmonit → agent trabalhando na última leitura
+	summaries map[string]agents.Summary
+	analyzing map[string]bool // linhas com leitura do haiku em voo
 }
 
-func New(cfg config.Config, store *tasks.Store, hist *history.Store, sess *session.Store, gl gitlabSource, ji jiraSource, badge string) Model {
+func New(cfg config.Config, store *tasks.Store, hist *history.Store, sess *session.Store, gl gitlabSource, ji jiraSource, ag agentSource, badge string) Model {
 	ti := textinput.New()
 	ti.Placeholder = "descrição · data @today/@tomorrow/@2026-06-15 · hora @today 15:00 · prioridade !alta/!critica/!media/!baixa"
 
@@ -175,11 +183,10 @@ func New(cfg config.Config, store *tasks.Store, hist *history.Store, sess *sessi
 	ta.SetHeight(8)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	runner := pipeline.New(cfg.Claude, gl, ji)
 
 	return Model{
 		cfg: cfg, store: store, hist: hist, sess: sess, badge: badge,
-		glSrc: gl, jiSrc: ji, runner: runner,
+		glSrc: gl, jiSrc: ji, ag: ag,
 		input: ti, filterInput: fi, spin: sp, vp: viewport.New(80, 20),
 		fetch: fetchState{ctx: ctx, cancel: cancel, loading: 2},
 		alert: alertState{
@@ -189,13 +196,15 @@ func New(cfg config.Config, store *tasks.Store, hist *history.Store, sess *sessi
 		},
 		sui: sessionUI{
 			descInput: ta,
-			progress:  map[string]claude.Progress{},
+			busy:      map[string]bool{},
+			summaries: map[string]agents.Summary{},
+			analyzing: map[string]bool{},
 		},
 	}
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.fetchAll(), m.spin.Tick, tick(), reminderTick())
+	return tea.Batch(m.fetchAll(), m.spin.Tick, tick(), reminderTick(), m.fetchAgents(), m.agentsTick())
 }
 
 func tick() tea.Cmd {
@@ -365,77 +374,77 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.sess.Add(msg.sess)
 		m.save(m.sess.Save())
-		m.sui.sessInfo = okStyle.Render("sessão criada: " + msg.sess.Key + " em " + msg.sess.Worktree)
-		// Worktree pronto → o pipeline (plan → dev → review) já inicia.
-		return m.startRun(msg.sess.ID)
+		m.cursor = len(m.sess.Sessions) - 1
+		// Pasta pronta → o agent já é lançado em background.
+		return m, m.launchAgentCmd(msg.sess)
 
-	case sessTickMsg:
-		m.pollProgress()
-		if m.anyRunning() {
-			return m, sessTick()
-		}
-		m.sui.ticking = false
-		return m, nil
-
-	case sessFinishedMsg:
-		sess, ok := m.sess.Get(msg.id)
-		if !ok {
-			return m, nil
-		}
-		if sess.Status == session.StatusCancelled {
-			m.save(m.sess.Save())
-			return m, nil
-		}
-		var title, body string
+	case agentLaunchedMsg:
+		var key string
 		m.sess.Update(msg.id, func(s *session.Session) {
-			s.Prompt = msg.prompt
-			// O log final traz o session_id do Claude (para retomar a fase
-			// certa depois) e o resumo da fase.
-			if s.LogFile != "" {
-				if p, err := claude.ReadProgress(s.LogFile); err == nil {
-					m.sui.progress[s.ID] = p
-					if p.SessionID != "" {
-						s.SetClaudeID(s.Phase, p.SessionID)
-					}
-					if p.Result != "" {
-						s.SetResult(s.Phase, p.Result)
-					}
-				}
+			key = s.Key
+			if msg.prompt != "" {
+				s.Prompt = msg.prompt
 			}
-			now := time.Now()
-			s.Finished = &now
-			title = "wmonit — sessão " + s.Key
-			switch {
-			case msg.err != nil:
-				s.Status = session.StatusFailed
-				s.Err = msg.err.Error()
-				body = "falhou na fase " + phaseLabel(s.Phase, s.Mode) + ": " + s.Err
-			case !s.IsReview() && session.NextPhase(s.Phase) != "":
-				// Gate manual: a próxima fase só roda com a sua aprovação.
-				s.Status = session.StatusWaiting
-				body = phaseLabel(s.Phase, s.Mode) + " concluído — revise (enter) e aprove (s)"
-			case s.IsReview():
-				s.Status = session.StatusDone
-				body = "revisão concluída — veja o resultado (enter)"
-			default:
-				s.Status = session.StatusDone
-				body = "review concluído — veja o veredito (enter)"
+			if msg.err != nil {
+				s.Status, s.Err = session.StatusFailed, msg.err.Error()
+				return
 			}
+			s.Status, s.Err, s.AgentID = session.StatusRunning, "", msg.agentID
 		})
 		m.save(m.sess.Save())
-		return m, notifyCmd(title, body)
-
-	case interactiveDoneMsg:
 		if msg.err != nil {
-			m.sui.sessInfo = errStyle.Render("claude interativo: " + msg.err.Error())
-		} else if sess, ok := m.sess.Get(msg.id); ok {
-			if sess.Status == session.StatusPending {
-				m.sess.Update(msg.id, func(s *session.Session) { s.Status = session.StatusDone })
-				m.save(m.sess.Save())
-			}
-			m.sui.sessInfo = dim.Render("sessão interativa de " + sess.Key + " encerrada — revise com v")
+			m.sui.sessInfo = errStyle.Render("agent de " + key + " não subiu: " + msg.err.Error())
+		} else {
+			m.sui.sessInfo = okStyle.Render("agent de " + key + " rodando em background (" + msg.agentID + ") — a abre a conversa")
 		}
+		return m, m.refreshAgents()
+
+	case agentsTickMsg:
+		return m, tea.Batch(m.refreshAgents(), m.agentsTick())
+
+	case agentsMsg:
+		return m, m.applyAgents(msg)
+
+	case summaryMsg:
+		m.applySummary(msg)
 		return m, nil
+
+	case attachDoneMsg:
+		if msg.err != nil {
+			m.sui.sessInfo = errStyle.Render("claude: " + msg.err.Error())
+		}
+		return m, m.refreshAgents()
+
+	case agentActionMsg:
+		if msg.err != nil {
+			m.sui.sessInfo = errStyle.Render(msg.err.Error())
+			return m, nil
+		}
+		if msg.info != "" {
+			m.sui.sessInfo = dim.Render(msg.info)
+		}
+		if msg.remove {
+			for i := range m.sess.Sessions {
+				if m.sess.Sessions[i].ID == msg.id {
+					m.sess.DeleteAt(i)
+					break
+				}
+			}
+			if m.cursor >= len(m.agentRows()) && m.cursor > 0 {
+				m.cursor--
+			}
+		} else if msg.status != "" && msg.id != "" {
+			m.sess.Update(msg.id, func(s *session.Session) {
+				s.Status = msg.status
+				if msg.status == session.StatusCompleted {
+					now := time.Now()
+					s.Finished = &now
+				}
+			})
+		}
+		delete(m.sui.busy, msg.id)
+		m.save(m.sess.Save())
+		return m, m.refreshAgents()
 
 	case editorClosedMsg:
 		// Abrir o worktree no editor não devolve conteúdo; só reportamos erro.
@@ -455,30 +464,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sui.descInput.Focus()
 			return m, textarea.Blink
 		}
-		return m, nil
-
-	case sessActionMsg:
-		if msg.err != nil {
-			m.sui.sessInfo = errStyle.Render(msg.err.Error())
-			return m, nil
-		}
-		if msg.remove {
-			for i := range m.sess.Sessions {
-				if m.sess.Sessions[i].ID == msg.id {
-					m.sess.DeleteAt(i)
-					break
-				}
-			}
-			if m.cursor >= len(m.sess.Sessions) && m.cursor > 0 {
-				m.cursor--
-			}
-		} else if msg.status != "" {
-			m.sess.Update(msg.id, func(s *session.Session) { s.Status = msg.status })
-		}
-		// Estado de runtime da sessão que saiu de cena não fica para trás.
-		delete(m.sui.progress, msg.id)
-		m.runner.Forget(msg.id)
-		m.save(m.sess.Save())
 		return m, nil
 
 	case tea.KeyMsg:
@@ -577,20 +562,13 @@ func (m Model) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.vp.GotoTop()
 		return m, nil
 	case "1", "2", "3", "4", "5", "6":
-		m.tab = tab(msg.String()[0] - '1')
-		m.cursor, m.filter = 0, ""
-		m.vp.GotoTop()
-		return m, nil
+		return m.switchTab(tab(msg.String()[0] - '1'))
 	case "tab", "l", "right":
-		m.tab, m.cursor, m.filter = (m.tab+1)%numTabs, 0, ""
-		m.vp.GotoTop()
-		return m, nil
+		return m.switchTab((m.tab + 1) % numTabs)
 	case "shift+tab", "h", "left":
-		m.tab, m.cursor, m.filter = (m.tab+numTabs-1)%numTabs, 0, ""
-		m.vp.GotoTop()
-		return m, nil
+		return m.switchTab((m.tab + numTabs - 1) % numTabs)
 	case "r":
-		return m, m.refresh()
+		return m, tea.Batch(m.refresh(), m.refreshAgents())
 	}
 
 	if m.tab == tabTarefas {
@@ -622,8 +600,8 @@ func (m Model) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if m.tab == tabSessoes {
-		return m.sessionKeys(msg)
+	if m.tab == tabAgentes {
+		return m.agentKeys(msg)
 	}
 
 	if m.tab == tabGitLab || m.tab == tabJira {
@@ -695,11 +673,15 @@ func (m *Model) scrollToItem() {
 	m.scrollTo(content, sel)
 }
 
-// scrollToSession mantém visível a sessão selecionada — cada sessão ocupa
-// mais de uma linha, então usa a linha real do item, não o índice do cursor.
-func (m *Model) scrollToSession() {
-	content, sel := m.viewSessoes()
-	m.scrollTo(content, sel)
+// switchTab troca de aba; ao entrar na de Agentes, relê o agent view na hora
+// em vez de esperar o próximo tick.
+func (m Model) switchTab(t tab) (tea.Model, tea.Cmd) {
+	m.tab, m.cursor, m.filter = t, 0, ""
+	m.vp.GotoTop()
+	if t == tabAgentes {
+		return m, m.refreshAgents()
+	}
+	return m, nil
 }
 
 func (m *Model) scrollToCursor() { m.scrollTo(m.content(), m.cursor) }

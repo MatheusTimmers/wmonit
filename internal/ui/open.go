@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"runtime"
@@ -51,14 +52,37 @@ func editorCommand(cfg config.Config, paths ...string) *exec.Cmd {
 	return exec.Command(fields[0], args...)
 }
 
-// openEditorCmd suspende a TUI e abre o diretório no editor (nvim por
-// padrão). Editores de terminal seguram o processo; os gráficos (que
-// "forkam") devolvem na hora — em ambos a TUI volta ao fechar/retornar.
-func openEditorCmd(cfg config.Config, dir string) tea.Cmd {
-	cmd := editorCommand(cfg, dir)
-	return tea.ExecProcess(cmd, func(err error) tea.Msg {
-		return editorClosedMsg{err: err}
-	})
+// openWorkspaceCmd abre a pasta no editor de workspace (VS Code por padrão)
+// sem suspender a TUI: o editor é gráfico e segue sozinho.
+func openWorkspaceCmd(cfg config.Config, dir string) tea.Cmd {
+	return func() tea.Msg {
+		fields := strings.Fields(cfg.Editor.Workspace)
+		if len(fields) == 0 {
+			return editorClosedMsg{err: fmt.Errorf("editor.workspace vazio no config.toml")}
+		}
+		cmd := exec.Command(fields[0], append(fields[1:], dir)...)
+		if err := cmd.Start(); err != nil {
+			return editorClosedMsg{err: err}
+		}
+		go func() { _ = cmd.Wait() }() // o launcher do code sai logo; não deixa zumbi
+		return nil
+	}
+}
+
+// externalTerminal monta o comando que abre cmd numa aba nova do terminal
+// externo (Windows Terminal: `wt -w 0 new-tab`, na janela atual). nil quando
+// não há terminal configurado.
+func externalTerminal(cfg config.Config, title string, cmd *exec.Cmd) *exec.Cmd {
+	if cfg.Editor.Terminal == "" || cmd == nil {
+		return nil
+	}
+	// O wt lê ';' como separador de comandos: não pode aparecer no título.
+	title = strings.NewReplacer(";", ",", `"`, "'").Replace(title)
+	args := []string{"-w", "0", "new-tab", "--title", title}
+	if cmd.Dir != "" {
+		args = append(args, "-d", cmd.Dir)
+	}
+	return exec.Command(cfg.Editor.Terminal, append(args, cmd.Args...)...)
 }
 
 // editNoteCmd escreve o texto atual num arquivo temporário, abre o editor

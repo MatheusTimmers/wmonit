@@ -192,19 +192,38 @@ func Remove(repo, path string, force bool) error {
 	return err
 }
 
-// Diff devolve o diff do worktree contra o HEAD (inclui arquivos novos
-// via -N/intent-to-add não persistente: usa diff de stat + patch).
+// Diff devolve tudo o que a branch do worktree traz: os commits desde que
+// saiu da branch base e o diff dela até o estado atual (commitado ou não),
+// mais os arquivos novos ainda fora do git. Sem base conhecida, cai no diff
+// contra o HEAD (só o que não foi commitado).
 func Diff(path string) (string, error) {
-	stat, err := git(path, "diff", "HEAD", "--stat")
+	from := "HEAD"
+	base := baseBranch(path)
+	if base != "" {
+		if mb, err := git(path, "merge-base", "HEAD", base); err == nil {
+			from = strings.TrimSpace(mb)
+		}
+	}
+	stat, err := git(path, "diff", from, "--stat")
 	if err != nil {
 		return "", err
 	}
-	patch, err := git(path, "diff", "HEAD")
+	patch, err := git(path, "diff", from)
 	if err != nil {
 		return "", err
+	}
+	var b strings.Builder
+	if from != "HEAD" {
+		b.WriteString("Comparando com " + base + "\n\n")
+		if log, _ := git(path, "log", "--oneline", from+"..HEAD"); strings.TrimSpace(log) != "" {
+			b.WriteString("Commits da branch:\n")
+			for _, l := range strings.Split(strings.TrimSpace(log), "\n") {
+				b.WriteString("  " + l + "\n")
+			}
+			b.WriteString("\n")
+		}
 	}
 	untracked, _ := git(path, "ls-files", "--others", "--exclude-standard")
-	var b strings.Builder
 	if u := strings.TrimSpace(untracked); u != "" {
 		b.WriteString("Arquivos novos (untracked):\n")
 		for _, f := range strings.Split(u, "\n") {
@@ -216,4 +235,26 @@ func Diff(path string) (string, error) {
 	b.WriteString("\n")
 	b.WriteString(patch)
 	return b.String(), nil
+}
+
+// baseBranch acha a branch de onde o worktree saiu: o default do remoto e,
+// sem ele, as de integração usuais (remota antes da local). A própria branch
+// do worktree não serve de base.
+func baseBranch(path string) string {
+	current, _ := git(path, "branch", "--show-current")
+	current = strings.TrimSpace(current)
+	if out, err := git(path, "rev-parse", "--abbrev-ref", "origin/HEAD"); err == nil {
+		if b := strings.TrimSpace(out); b != "" && b != "origin/"+current {
+			return b
+		}
+	}
+	for _, b := range []string{"origin/develop", "origin/master", "origin/main", "develop", "master", "main"} {
+		if b == current || b == "origin/"+current {
+			continue
+		}
+		if _, err := git(path, "rev-parse", "--verify", "--quiet", b); err == nil {
+			return b
+		}
+	}
+	return ""
 }

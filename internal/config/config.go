@@ -36,13 +36,15 @@ type Claude struct {
 	WorktreesDir   string            `toml:"worktrees_dir"`
 	Bin            string            `toml:"bin"`
 	BranchPrefix   string            `toml:"branch_prefix"`
-	Templates      map[string]string `toml:"templates"` // TODO: Seria legal adicionar um template geral e não por serviço
-	Models         map[string]string `toml:"models"`
-	PermissionMode string            `toml:"permission_mode"`
+	Templates      map[string]string `toml:"templates"`       // TODO: Seria legal adicionar um template geral e não por serviço
+	Model          string            `toml:"model"`           // modelo dos agents; vazio = default do usuário
+	PermissionMode string            `toml:"permission_mode"` // vazio = default do usuário (settings.json)
 }
 
 type Editor struct {
-	Bin string `toml:"bin"`
+	Bin       string `toml:"bin"`       // editor da explicação (ctrl+e); vazio = $VISUAL/$EDITOR/nvim
+	Workspace string `toml:"workspace"` // abre a pasta de um agent (tecla e); default "code"
+	Terminal  string `toml:"terminal"`  // terminal externo da conversa (tecla a); "wt" no Windows, vazio = na própria TUI
 }
 
 type Config struct {
@@ -101,16 +103,11 @@ func Load() (Config, error) {
 	if cfg.Claude.Bin == "" {
 		cfg.Claude.Bin = "claude"
 	}
-	if cfg.Claude.PermissionMode == "" {
-		cfg.Claude.PermissionMode = "bypassPermissions"
+	if cfg.Editor.Workspace == "" {
+		cfg.Editor.Workspace = "code"
 	}
-	if cfg.Claude.Models == nil {
-		cfg.Claude.Models = map[string]string{}
-	}
-	for phase, model := range map[string]string{"plan": "opus", "dev": "sonnet", "review": "opus"} {
-		if _, ok := cfg.Claude.Models[phase]; !ok {
-			cfg.Claude.Models[phase] = model
-		}
+	if cfg.Editor.Terminal == "" && runtime.GOOS == "windows" {
+		cfg.Editor.Terminal = "wt"
 	}
 	return cfg, nil
 }

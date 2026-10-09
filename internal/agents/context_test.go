@@ -1,11 +1,10 @@
-package pipeline
+package agents
 
 import (
 	"context"
 	"strings"
 	"testing"
 
-	"github.com/timmers/wmonit/internal/config"
 	"github.com/timmers/wmonit/internal/gitlab"
 	"github.com/timmers/wmonit/internal/jira"
 	"github.com/timmers/wmonit/internal/session"
@@ -48,11 +47,9 @@ func TestBuildContextIssue(t *testing.T) {
 		Description: "descrição da issue",
 		Comments:    []jira.Comment{{Author: "PO", Body: "prioridade alta"}},
 	}}
-	r := New(config.Claude{Templates: map[string]string{"hades": "regras do hades"}}, gl, ji)
-
 	sess := session.Session{Key: "ROT-501", Title: "faz X", Service: "hades", Kind: session.KindIssue}
 	mrs := []gitlab.MR{mr(9471, 1, "algo #ROT-501 [feature]", "Roteamento/hades!9471")}
-	ctx := r.BuildContext(sess, mrs)
+	ctx := BuildContext(gl, ji, "regras do hades", sess, mrs)
 
 	if ctx.Description != "descrição da issue" {
 		t.Errorf("Description = %q", ctx.Description)
@@ -76,11 +73,9 @@ func TestBuildContextIssue(t *testing.T) {
 
 func TestBuildContextMR(t *testing.T) {
 	gl := fakeGitLab{notes: []gitlab.Note{note("Rev", "ajusta isso", false)}}
-	r := New(config.Claude{}, gl, fakeJira{})
-
 	sess := session.Session{Key: "hades!9471", Title: "meu MR", Service: "hades", Kind: session.KindMR}
 	mrs := []gitlab.MR{mr(9471, 1, "meu MR #ROT-501 [bug]", "Roteamento/hades!9471")}
-	ctx := r.BuildContext(sess, mrs)
+	ctx := BuildContext(gl, fakeJira{}, "", sess, mrs)
 
 	if !ctx.HasBranch {
 		t.Error("sessão de MR deveria ter HasBranch")

@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/timmers/wmonit/internal/agents"
 	"github.com/timmers/wmonit/internal/config"
 	"github.com/timmers/wmonit/internal/demo"
 	"github.com/timmers/wmonit/internal/gitlab"
@@ -48,11 +49,11 @@ func main() {
 
 	var m ui.Model
 	if *demoMode {
-		m = ui.New(cfg, store, hist, sess, demo.GitLabSource{}, demo.JiraSource{}, "🧪 DEMO")
+		m = ui.New(cfg, store, hist, sess, demo.GitLabSource{}, demo.JiraSource{}, demo.AgentsSource{}, "🧪 DEMO")
 	} else {
 		gl := gitlab.New(cfg.GitLab.URL, cfg.GitLab.Token)
 		ji := jira.New(cfg.Jira.URL, cfg.Jira.Auth, cfg.Jira.Email, cfg.Jira.Token, cfg.Jira.ComplexityField)
-		m = ui.New(cfg, store, hist, sess, gl, ji, "")
+		m = ui.New(cfg, store, hist, sess, gl, ji, agents.NewLocal(cfg.Claude.Bin), "")
 	}
 
 	if _, err := tea.NewProgram(m, tea.WithAltScreen()).Run(); err != nil {

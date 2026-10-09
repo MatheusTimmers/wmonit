@@ -54,7 +54,7 @@ arquivo): `WMONIT_GITLAB_URL`, `WMONIT_GITLAB_TOKEN`, `WMONIT_JIRA_URL`,
 
 | Tecla            | Ação                                  |
 | ---------------- | ------------------------------------- |
-| `1`–`6` / `tab`  | troca de aba (Hoje, Desempenho, GitLab, Jira, Tarefas, Sessões) |
+| `1`–`6` / `tab`  | troca de aba (Hoje, Desempenho, GitLab, Jira, Tarefas, Agentes) |
 | `j`/`k`, setas, PgUp/PgDn | rola / move o cursor da aba  |
 | `g`              | abre o relatório do dia (esc/q volta) |
 | `r`              | atualiza os dados agora               |
@@ -135,87 +135,66 @@ e dá uma série temporal real ao longo do tempo.
 Os dados são atualizados automaticamente a cada 5 minutos. As tarefas ficam
 salvas em `~/.local/share/wmonit/tasks.json`.
 
-## Sessões de trabalho com o Claude Code
+## Agents do Claude Code
 
-A aba **Sessões** (tecla `6`) gerencia tarefas executadas pelo Claude Code
-em worktrees isolados — útil para trabalhar duas tarefas ao mesmo tempo no
-mesmo repositório.
+A aba **Agentes** (tecla `6`) cria e acompanha agents do Claude Code que
+rodam em **background** (`claude --bg`) — os mesmos que o `claude agents`
+(agent view) lista. Cada tarefa é **um agent só**, criado quando você pede:
+ele entende, planeja e implementa numa conversa, e você entra nela quando
+quiser (`a`) para responder, aprovar uma permissão ou corrigir o rumo.
 
-Nas abas GitLab/Jira, `c` cria uma sessão para o item selecionado: a TUI
-muda para a aba Sessões e abre um textbox para você explicar a tarefa
-(`ctrl+d` confirma). O **modo** é deduzido do item: seu MR ou uma issue →
-**desenvolvimento** (o pipeline abaixo); o MR de outra pessoa que aguarda
-seu review → **revisão**, em que o Claude só analisa o MR e te entrega um
-parecer, sem mexer no código. `ctrl+r` alterna os dois antes de iniciar.
-Uma issue Jira ganha uma branch nova com o nome da
-chave (`ABC-123`; defina `branch_prefix` em `[claude]` para algo como
-`feature/`), criada a partir do default do remoto (`origin/HEAD`)
-atualizado — se a branch já existir (sessão anterior da mesma issue), ela
-é reaproveitada; um MR usa a branch existente. O serviço (repositório em `sources_dir`) é
-deduzido da `#TAG`/projeto do MR; se não der, você escolhe numa lista. O
-worktree é criado em `<worktrees_dir>/<id-da-sessão>` e o pipeline inicia
-automaticamente.
+**Criar um agent:**
 
-Cada execução é um **pipeline de três agents** headless (`claude -p
---output-format stream-json`), todos com o contexto completo da tarefa —
-sua explicação, descrição e comentários da issue no Jira, descrição e
-comentários do MR ligado, e o template do serviço (`[claude.templates]`):
+- Nas abas GitLab/Jira, `c` no item selecionado: a TUI vai para a aba
+  Agentes e abre um textbox para você explicar a tarefa (`ctrl+d` lança,
+  `ctrl+e` edita no editor). O **modo** é deduzido do item: seu MR ou uma
+  issue → **desenvolvimento**; o MR de outra pessoa que aguarda seu review →
+  **revisão** (o agent só analisa e entrega um parecer com comentários
+  prontos para colar). `ctrl+r` alterna os dois.
+- Uma issue ganha um **worktree** com uma branch nova com o nome da chave
+  (`ABC-123`; `branch_prefix` em `[claude]` para algo como `feature/`),
+  criada a partir do default do remoto; um MR usa a branch existente. O
+  serviço vem da `#TAG`/projeto do MR; se não der, você escolhe numa lista.
+- Na aba Agentes, `n` cria um **agent livre**: sem issue/MR, roda direto no
+  repositório escolhido (sem worktree próprio).
 
-1. **plan** (opus) — explora o repositório (e o que já existe na branch, no
-   caso de MR) e grava o plano em `WMONIT_PLAN.md` na raiz do worktree (o
-   arquivo é excluído do git via `info/exclude`, não suja o status).
-2. **dev** (sonnet) — implementa seguindo o plano e faz commits (sem push).
-3. **review** (opus) — revisa o diff e responde com um veredito (APROVADO
-   ou AJUSTES NECESSÁRIOS); não altera código.
+O prompt leva o contexto completo da tarefa — sua explicação, descrição e
+comentários da issue, descrição e comentários do MR ligado e o template do
+serviço (`[claude.templates]`). O agent é instruído a **não rodar build nem
+testes** (o worktree isolado não builda), a commitar seguindo o CLAUDE.md e
+a não dar push.
 
-Os agentes são instruídos a **não rodar build nem testes**: o worktree
-isolado não builda (submodules/dependências não resolvem nele), então a
-validação fica por sua conta depois do `f`/merge da branch.
+**Acompanhar:** a aba lista os agents do wmonit e, à parte, as **outras
+sessões** vivas do agent view, com estado (▶ trabalhando · ⏸ aguarda você),
+contexto, custo, subagents e a última resposta. Uma **notificação** avisa
+quando um agent do wmonit para de trabalhar. No topo aparecem as
+**colisões**: a mesma tarefa aberta em dois worktrees, dois agents no mesmo
+worktree e o mesmo arquivo editado por mais de um agent. Contexto, custo e
+arquivos editados vêm do mod `fleet` (`~/.claude/mods/fleet`); sem ele, o
+contexto sai do transcript e o resto fica em branco.
 
-**Sessão de revisão** (modo revisão): em vez do pipeline, roda uma fase
-única que revisa o MR de outra pessoa — explora o diff contra a branch base,
-aponta bugs/riscos/desvios de convenção com `arquivo:linha` e fecha com uma
-recomendação (aprovar ou pedir ajustes) e comentários prontos para você colar
-no GitLab. Não há plan, dev nem ciclo de correção; ao terminar, `enter`
-mostra o parecer, `t` abre o Claude interativo para aprofundar e `f` conclui.
+Na aba Agentes:
 
-**Cada fase tem um gate manual:** ao terminar, a sessão fica
-"⏸ aguardando aprovação" — `enter` mostra o resultado da fase (e o
-`WMONIT_PLAN.md` completo) no próprio TUI, e `s` aprova e dispara a fase
-seguinte. Quando o review termina, `s` inicia o **ciclo de correção**:
-retoma a conversa do agente dev (cada fase tem sua conversa preservada)
-com o veredito do review, aplica os ajustes e volta para o gate de review.
-Numa fase que falhou, `s` tenta de novo retomando a conversa daquela fase.
-
-O modelo de cada fase é configurável em `[claude.models]` (alias `opus`/
-`sonnet`/`haiku` ou id completo, passado via `--model`):
-
-```toml
-[claude.models]
-plan = "opus"     # raciocínio profundo para entender e planejar
-dev = "sonnet"    # rápido e econômico com o plano já pronto
-review = "opus"   # precisão para achar bugs
-```
-
-Como ninguém aprova ferramenta numa execução headless, o pipeline roda com
-`--permission-mode bypassPermissions` por padrão (o worktree é isolado, mas
-o agente ganha bash livre); configure `permission_mode` na seção `[claude]`
-para um modo mais restrito, ciente de que build/commit podem ser negados.
-
-O progresso (fase, turnos, ferramentas, último texto) aparece ao vivo e uma
-notificação de desktop avisa quando o pipeline termina ou falha.
-
-Na aba Sessões:
-
-- `s` — inicia o pipeline (pendente) · aprova a fase (aguardando) · tenta
-  de novo (falhou) · ciclo de correção (pronta).
-- `enter`/`p` — resultado das fases, veredito e plano no painel de detalhes.
-- `t` — abre o Claude **interativo** no worktree (a TUI volta ao sair).
-- `v` — mostra o diff do worktree · `e` — abre no editor (`$VISUAL`/VS Code).
+- `enter`/`p` — detalhes: uso, arquivos editados, sua explicação e as
+  últimas respostas do agent.
+- `a` — abre a conversa numa **aba nova do terminal** (Windows Terminal;
+  `claude attach`, ou o Claude interativo retomando a conversa num agent já
+  encerrado) e o wmonit segue na tela · `A` — abre aqui mesmo, suspendendo
+  a TUI até você sair.
+- `i` — o **haiku** lê por cima o agent selecionado (tarefa, git e últimas
+  respostas) e devolve um nome e **o que falta**; `I` faz isso com todos. O
+  nome também é aplicado à sessão no agent view (via mod `fleet`, com
+  `/rename`). Roda sozinho quando um agent do wmonit para de trabalhar.
+- `s` — lança o agent de uma sessão sem agent vivo (retoma a conversa, se
+  houver) · `x` — para o agent (a conversa fica).
+- `v` — diff do worktree · `e` — abre a pasta no VS Code · `o` — abre a
+  issue/MR.
 - `f` — conclui: remove o worktree (recusa se houver mudanças não
-  commitadas; `F` força) e marca a sessão como concluída.
-- `x` — cancela a execução em andamento · `d`/`D` — remove a sessão.
+  commitadas; `F` força), tira o agent do agent view e marca como concluída.
+- `d`/`D` — remove a sessão da lista (e o worktree).
 
-As sessões ficam em `~/.local/share/wmonit/sessions.json` e os logs em
-`~/.local/share/wmonit/logs/`. Configure a pasta de fontes, os worktrees e o
-binário na seção `[claude]` do `config.toml`.
+O modelo e o modo de permissão dos agents vêm de `model` e
+`permission_mode` em `[claude]`; vazios, valem os do seu `settings.json`.
+As sessões ficam em `~/.local/share/wmonit/sessions.json`; as do antigo
+pipeline (plan → dev → review) continuam listadas e `s` lança um agent para
+elas.

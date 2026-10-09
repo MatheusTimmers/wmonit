@@ -179,18 +179,15 @@ func demoSessions() []session.Session {
 		{
 			ID: "hades-9470-demo", Key: "hades!9470", Title: "novo formato de relatório",
 			Service: "hades", Branch: "feature/ROT-500", Kind: session.KindMR, Mode: session.ModeReview,
-			Phase: session.PhaseReview, Status: session.StatusDone, Created: hoursAgo(2),
-			Results: map[string]string{
-				session.PhaseReview: "PEDIR AJUSTES: o formato novo não trata o caso de relatório vazio (hades/report.go:88) e o cabeçalho ignora o fuso configurado (report.go:120). Sugiro cobrir os dois antes de aprovar.",
-			},
+			Worktree: `c:\Fontes\.worktrees\hades-9470-demo`, AgentID: "e5f6a7b8", ClaudeID: "e5f6a7b8-demo",
+			Status: session.StatusRunning, Created: hoursAgo(2),
 		},
 		{
 			ID: "ROT-512-demo", Key: "ROT-512", Title: "endpoint de histórico de ordens",
 			Service: "backoffice", Branch: "feature/ROT-512", Kind: session.KindIssue, Mode: session.ModeImplement,
-			Phase: session.PhasePlan, Status: session.StatusWaiting, Created: hoursAgo(1),
-			Results: map[string]string{
-				session.PhasePlan: "Objetivo: expor o histórico de ordens por conta. Plano: 1) novo handler GET /ordens/historico; 2) consulta paginada no repositório; 3) testes do handler. Validação fica com o usuário.",
-			},
+			Worktree: `c:\Fontes\.worktrees\ROT-512-demo`, AgentID: "a1b2c3d4",
+			UserNote: "expor o histórico paginado por conta",
+			Status:   session.StatusRunning, Created: hoursAgo(1),
 		},
 	}
 }
