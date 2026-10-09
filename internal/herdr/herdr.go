@@ -107,8 +107,9 @@ func (c *Client) raw(timeout time.Duration, args ...string) ([]byte, error) {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()
+	name := commandName(args)
 	if ctx.Err() != nil {
-		return nil, fmt.Errorf("herdr %s: sem resposta em %s", strings.Join(args, " "), timeout)
+		return nil, fmt.Errorf("%s: sem resposta em %s", name, timeout)
 	}
 	if err != nil {
 		for _, out := range [][]byte{stderr.Bytes(), stdout.Bytes()} {
@@ -121,9 +122,20 @@ func (c *Client) raw(timeout time.Duration, args ...string) ([]byte, error) {
 		if msg == "" {
 			msg = err.Error()
 		}
-		return nil, fmt.Errorf("herdr %s: %s", strings.Join(args, " "), msg)
+		return nil, fmt.Errorf("%s: %s", name, msg)
 	}
 	return stdout.Bytes(), nil
+}
+
+func commandName(args []string) string {
+	var parts []string
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") || len(parts) == 2 {
+			break
+		}
+		parts = append(parts, a)
+	}
+	return "herdr " + strings.Join(parts, " ")
 }
 
 func (c *Client) call(timeout time.Duration, out any, args ...string) error {

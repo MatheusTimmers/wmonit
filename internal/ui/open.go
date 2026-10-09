@@ -11,8 +11,8 @@ import (
 	"github.com/timmers/wmonit/internal/config"
 )
 
-// descEditedMsg chega quando o editor da explicação da sessão fechou,
-// trazendo o texto editado de volta para o textbox.
+// descEditedMsg chega quando o editor do texto (explicação de um workspace
+// novo ou mensagem ao Claude) fechou, trazendo o texto de volta ao textbox.
 type descEditedMsg struct {
 	text string
 	err  error
@@ -78,12 +78,18 @@ func editNoteCmd(cfg config.Config, initial string) tea.Cmd {
 }
 
 func openURL(u string) error {
+	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "windows":
-		return exec.Command("rundll32", "url.dll,FileProtocolHandler", u).Start()
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", u)
 	case "darwin":
-		return exec.Command("open", u).Start()
+		cmd = exec.Command("open", u)
 	default:
-		return exec.Command("xdg-open", u).Start()
+		cmd = exec.Command("xdg-open", u)
 	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go func() { _ = cmd.Wait() }()
+	return nil
 }

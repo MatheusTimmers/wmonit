@@ -207,7 +207,7 @@ func New(cfg config.Config, store *tasks.Store, hist *history.Store, sess *sessi
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.fetchAll(), m.spin.Tick, tick(), reminderTick(), m.pollHerdr())
+	return tea.Batch(m.fetchAll(), m.spin.Tick, tick(), reminderTick(), m.poll(true))
 }
 
 func tick() tea.Cmd {

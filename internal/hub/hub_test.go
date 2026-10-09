@@ -121,18 +121,18 @@ func TestOpenBuildsDevLayout(t *testing.T) {
 func TestOpenKeepsPromptUntilAgentReady(t *testing.T) {
 	dir := t.TempDir()
 	f := &fakeHerdr{startErr: &herdr.Error{Code: herdr.CodeAgentNotReady, Message: "blocked"}}
-	got, err := Open(f, Poll(f), session.Session{Service: "wmonit", Repo: dir, Kind: session.KindFree}, OpenOpts{Kickoff: "faça x"})
+	got, err := Open(f, Poll(f), session.Session{Service: "painel", Repo: dir, Kind: session.KindFree}, OpenOpts{Kickoff: "faça x"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Label != "wmonit" || got.PendingPrompt != "faça x" || got.Err != "" {
+	if got.Label != "painel" || got.PendingPrompt != "faça x" || got.Err != "" {
 		t.Fatalf("sessão = %+v", got)
 	}
 	if _, err := os.Stat(filepath.Join(dir, claude.TaskFile)); err == nil {
 		t.Error("sem TaskText não deveria gravar arquivo")
 	}
 
-	f.agents = []herdr.Agent{{Name: "wmonit", WorkspaceID: got.Workspace, Status: herdr.StatusBlocked}}
+	f.agents = []herdr.Agent{{Name: "painel", WorkspaceID: got.Workspace, Status: herdr.StatusBlocked}}
 	if sent, _ := Deliver(f, Poll(f), &got); sent {
 		t.Fatal("não deveria mandar com o agent travado")
 	}
@@ -145,8 +145,23 @@ func TestOpenKeepsPromptUntilAgentReady(t *testing.T) {
 	if sent, err := Deliver(f, Poll(f), &got); !sent || err != nil || got.PendingPrompt != "" {
 		t.Fatalf("Deliver = %v %v %+v", sent, err, got)
 	}
-	if p := f.prompts["wmonit"]; len(p) != 1 || p[0] != "faça x" {
+	if p := f.prompts["painel"]; len(p) != 1 || p[0] != "faça x" {
 		t.Errorf("prompts = %v", f.prompts)
+	}
+}
+
+func TestReservedHubNames(t *testing.T) {
+	dir := t.TempDir()
+	f := &fakeHerdr{}
+	got, err := Open(f, Poll(f), session.Session{Service: "wmonit", Repo: dir, Kind: session.KindFree}, OpenOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Label == HubLabel || got.Agent == HubAgent {
+		t.Fatalf("workspace de tarefa não pode usar o nome do hub: %+v", got)
+	}
+	if !(Snapshot{}).nameTaken(HubAgent) {
+		t.Error("o nome do agent de pendências deveria estar reservado")
 	}
 }
 

@@ -44,10 +44,10 @@ branch_prefix = ""         # prefixo da branch de workspaces de issue (ex.: "fea
 model = ""
 permission_mode = ""
 
-[herdr]
-bin = "herdr"      # binário do herdr
-editor = "nvim ."  # comando da aba de editor de cada workspace
-
 # Instruções extras por serviço, anexadas à tarefa de cada workspace.
 # [claude.templates]
 # hades = "O roteamento fica em src/router; siga o padrão dos handlers existentes."
+
+[herdr]
+bin = "herdr"      # binário do herdr
+editor = "nvim ."  # comando da aba de editor de cada workspace

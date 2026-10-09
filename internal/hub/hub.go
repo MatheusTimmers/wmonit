@@ -101,13 +101,15 @@ func (s Snapshot) AgentIn(workspaceID string) (herdr.Agent, bool) {
 
 func (s Snapshot) nameTaken(name string) bool {
 	_, ok := s.Agent(name)
-	return ok
+	return ok || name == HubAgent
 }
 
 func (s Snapshot) labelTaken(label string) bool {
 	_, ok := s.WorkspaceByLabel(label)
-	return ok
+	return ok || ReservedLabel(label)
 }
+
+func ReservedLabel(label string) bool { return strings.EqualFold(label, HubLabel) }
 
 func Reconcile(sess *session.Session, snap Snapshot) bool {
 	if !snap.Online() || !sess.Active() || sess.Label == "" {
@@ -182,12 +184,12 @@ func Open(h Herdr, snap Snapshot, sess session.Session, o OpenOpts) (session.Ses
 	return sess, nil
 }
 
-func EnsureAgent(h Herdr, snap Snapshot, sess session.Session, args []string) (string, error) {
+func EnsureAgent(h Herdr, snap Snapshot, sess session.Session, args []string) (name string, started bool, err error) {
 	if sess.Workspace == "" {
-		return "", errors.New("workspace fechado — abra de novo com w")
+		return "", false, errors.New("workspace fechado — abra de novo com w")
 	}
 	if a, ok := snap.AgentIn(sess.Workspace); ok {
-		return a.Name, nil
+		return a.Name, false, nil
 	}
 	dir := sess.Worktree
 	if dir == "" {
@@ -195,14 +197,13 @@ func EnsureAgent(h Herdr, snap Snapshot, sess session.Session, args []string) (s
 	}
 	_, pane, err := h.CreateTab(sess.Workspace, dir, TabClaude)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
-	name := herdr.UniqueName(herdr.AgentName(sess.Name()), snap.nameTaken)
-	err = h.StartAgent(name, "claude", pane.ID, append(append([]string{}, args...), "--continue")...)
-	if err != nil && !herdr.IsCode(err, herdr.CodeAgentNotReady) {
-		return "", err
+	name = herdr.UniqueName(herdr.AgentName(sess.Name()), snap.nameTaken)
+	if err := h.StartAgent(name, "claude", pane.ID, args...); err != nil && !herdr.IsCode(err, herdr.CodeAgentNotReady) {
+		return "", false, err
 	}
-	return name, nil
+	return name, true, nil
 }
 
 func Deliver(h Herdr, snap Snapshot, sess *session.Session) (bool, error) {

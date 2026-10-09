@@ -28,7 +28,10 @@ const (
 
 type wsTickMsg struct{}
 
-type wsSnapMsg struct{ snap hub.Snapshot }
+type wsSnapMsg struct {
+	snap hub.Snapshot
+	tick bool
+}
 
 type sessSavedMsg struct {
 	sess session.Session
@@ -102,9 +105,11 @@ func wsTick(d time.Duration) tea.Cmd {
 	return tea.Tick(d, func(time.Time) tea.Msg { return wsTickMsg{} })
 }
 
-func (m Model) pollHerdr() tea.Cmd {
+func (m Model) pollHerdr() tea.Cmd { return m.poll(false) }
+
+func (m Model) poll(tick bool) tea.Cmd {
 	h := m.hr
-	return func() tea.Msg { return wsSnapMsg{snap: hub.Poll(h)} }
+	return func() tea.Msg { return wsSnapMsg{snap: hub.Poll(h), tick: tick} }
 }
 
 func (m Model) hubDir() string { return hub.HubDir(m.sess.Dir()) }
@@ -116,15 +121,18 @@ func (m Model) claudeArgs() []string {
 func (m Model) updateWorkspaces(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 	switch msg := msg.(type) {
 	case wsTickMsg:
-		return m, m.pollHerdr(), true
+		return m, m.poll(true), true
 
 	case wsSnapMsg:
 		cmds := m.applySnapshot(msg.snap)
-		next := wsPollEvery
-		if !msg.snap.Online() {
-			next = wsPollOffline
+		if msg.tick {
+			next := wsPollEvery
+			if !msg.snap.Online() {
+				next = wsPollOffline
+			}
+			cmds = append(cmds, wsTick(next))
 		}
-		return m, tea.Batch(append(cmds, wsTick(next))...), true
+		return m, tea.Batch(cmds...), true
 
 	case sessSavedMsg:
 		if msg.err != nil {
@@ -182,7 +190,7 @@ func (m Model) updateWorkspaces(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 
 	case hubAskedMsg:
 		if msg.err != nil {
-			m.sui.hubWaiting = false
+			m.sui.hubWaiting, m.sui.hubPending = false, false
 			m.sui.info = errStyle.Render("pendências: " + msg.err.Error())
 			if m.mode == modeDetail && m.detail.hub {
 				m.detail.loading = false
@@ -197,7 +205,7 @@ func (m Model) updateWorkspaces(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 			m.detail.body = m.hubBody()
 		}
 		if !msg.ready {
-			m.sui.info = warnStyle.Render("subindo o agent de pendências — o pedido vai assim que ele estiver pronto (se ele pedir para confirmar a pasta: a na linha 🧭)")
+			m.sui.info = warnStyle.Render("o agent de pendências está subindo ou ocupado — o pedido vai assim que ele estiver livre (se ele pedir para confirmar a pasta: a na linha 🧭)")
 		}
 		return m, m.pollHerdr(), true
 
@@ -649,7 +657,7 @@ func (m Model) launchCreate(p pendingSession, send bool) (tea.Model, tea.Cmd) {
 	snap := m.sui.snap
 	sess.Label = herdr.UniqueName(herdr.AgentName(base), func(l string) bool {
 		_, inHerdr := snap.WorkspaceByLabel(l)
-		return inHerdr || m.sess.LabelTaken(l)
+		return inHerdr || hub.ReservedLabel(l) || m.sess.LabelTaken(l)
 	})
 
 	h, gl, ji := m.hr, m.glSrc, m.jiSrc
@@ -705,7 +713,7 @@ func firstLine(s string) string {
 
 func (m Model) reopenCmd(s session.Session) tea.Cmd {
 	h := m.hr
-	opts := hub.OpenOpts{ClaudeArgs: m.claudeArgs(), Editor: m.cfg.Herdr.Editor}
+	opts := hub.OpenOpts{ClaudeArgs: m.claudeArgs(), Editor: m.cfg.Herdr.Editor, Kickoff: s.PendingPrompt}
 	return func() tea.Msg {
 		dir := s.Worktree
 		if dir == "" {
@@ -872,9 +880,13 @@ func (m Model) sendPromptCmd(target, text string) tea.Cmd {
 			}
 			agent = a.Name
 		case isSession:
-			name, err := hub.EnsureAgent(h, snap, sess, args)
+			name, started, err := hub.EnsureAgent(h, snap, sess, args)
 			if err != nil {
 				return infoMsg{err: err}
+			}
+			if started {
+				sess.Agent, sess.PendingPrompt = name, text
+				return sessSavedMsg{sess: sess, info: warnStyle.Render("subindo um Claude novo em " + sess.Name() + " — a mensagem vai assim que ele estiver pronto")}
 			}
 			agent = name
 		default:
@@ -984,7 +996,10 @@ func (m Model) askHub() (tea.Model, tea.Cmd) {
 		}
 		if ready {
 			if err := h.Prompt(hub.HubAgent, claude.DigestKickoff()); err != nil {
-				return hubAskedMsg{err: err}
+				if !herdr.IsCode(err, herdr.CodePromptStalled) {
+					return hubAskedMsg{err: err}
+				}
+				ready = false
 			}
 		}
 		return hubAskedMsg{at: at, ready: ready}
@@ -993,8 +1008,12 @@ func (m Model) askHub() (tea.Model, tea.Cmd) {
 
 func (m Model) hubKickoffCmd() tea.Cmd {
 	h := m.hr
+	at := m.sui.hubAsked
 	return func() tea.Msg {
 		if err := h.Prompt(hub.HubAgent, claude.DigestKickoff()); err != nil {
+			if herdr.IsCode(err, herdr.CodePromptStalled) {
+				return hubAskedMsg{at: at, ready: false}
+			}
 			return hubAskedMsg{err: err}
 		}
 		return infoMsg{info: dim.Render("pedido enviado ao agent de pendências")}
@@ -1115,15 +1134,21 @@ func (m Model) openDiff(s session.Session) (tea.Model, tea.Cmd) {
 
 func (m Model) finishCmd(s session.Session, force, remove bool) tea.Cmd {
 	h := m.hr
+	forceKey := "F"
+	if remove {
+		forceKey = "D"
+	}
 	return func() tea.Msg {
 		if s.Active() && s.OwnsWorktree() && !force {
 			if dirty, err := worktree.HasChanges(s.Worktree); err == nil && dirty {
-				return sessActionMsg{id: s.ID, err: fmt.Errorf("%s tem mudanças não commitadas — use %s para descartar", s.Worktree, map[bool]string{true: "D", false: "F"}[remove])}
+				return sessActionMsg{id: s.ID, err: fmt.Errorf("%s tem mudanças não commitadas — use %s para descartar", s.Worktree, forceKey)}
 			}
 		}
-		if s.Active() && s.Workspace != "" {
-			if err := h.CloseWorkspace(s.Workspace); err != nil && !herdr.IsCode(err, herdr.CodeServerNotRunning) {
-				return sessActionMsg{id: s.ID, err: err}
+		if s.Active() && s.Label != "" {
+			if ws, ok := hub.Poll(h).WorkspaceByLabel(s.Label); ok {
+				if err := h.CloseWorkspace(ws.ID); err != nil {
+					return sessActionMsg{id: s.ID, err: err}
+				}
 			}
 		}
 		if s.Active() && s.OwnsWorktree() {
@@ -1331,7 +1356,7 @@ func (m Model) viewSessoes() (string, int) {
 		write(m.sui.info + "\n\n")
 	}
 	rows := m.wsRows()
-	section2 := ""
+	lastHead := ""
 	for i, r := range rows {
 		head := ""
 		switch {
@@ -1342,9 +1367,9 @@ func (m Model) viewSessoes() (string, int) {
 		case r.kind == rowSession:
 			head = "Tarefas"
 		}
-		if head != "" && head != section2 {
+		if head != "" && head != lastHead {
 			write("\n" + section.Render(head) + "\n")
-			section2 = head
+			lastHead = head
 		}
 		cursor := "  "
 		if i == m.cursor {
