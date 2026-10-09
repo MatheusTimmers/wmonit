@@ -3,6 +3,7 @@ package worktree
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -161,5 +162,72 @@ func TestExcludeFiles(t *testing.T) {
 	}
 	if dirty, _ = HasChanges(wt); !dirty {
 		t.Errorf("mudança real não detectada após o exclude")
+	}
+}
+
+// O diff mostra o que a branch traz desde a base — commits e o que ainda não
+// foi commitado —, não só o que está fora do último commit.
+func TestDiffAgainstBase(t *testing.T) {
+	repo := t.TempDir()
+	newRepo(t, repo)
+	for _, args := range [][]string{{"checkout", "-q", "-b", "ROT-1"}} {
+		if _, err := git(repo, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repo, "b.txt"), []byte("commitado\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git(repo, "add", "."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git(repo, "commit", "-q", "-m", "adiciona b"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "a.txt"), []byte("a\nnao commitado\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	d, err := Diff(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Comparando com main", "adiciona b", "+commitado", "+nao commitado"} {
+		if !strings.Contains(d, want) {
+			t.Errorf("diff sem %q:\n%s", want, d)
+		}
+	}
+}
+
+func TestInspect(t *testing.T) {
+	repo := t.TempDir()
+	newRepo(t, repo)
+	if _, err := git(repo, "checkout", "-q", "-b", "ROT-2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "c.txt"), []byte("c\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git(repo, "add", "."); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := git(repo, "commit", "-q", "-m", "adiciona c"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "d.txt"), []byte("d\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, err := Inspect(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Branch != "ROT-2" || info.Base != "main" {
+		t.Fatalf("branch/base = %q/%q", info.Branch, info.Base)
+	}
+	if len(info.Commits) != 1 || !strings.Contains(info.Commits[0], "adiciona c") {
+		t.Errorf("commits = %v", info.Commits)
+	}
+	if len(info.Dirty) != 1 || !strings.Contains(info.Dirty[0], "d.txt") {
+		t.Errorf("dirty = %v", info.Dirty)
 	}
 }

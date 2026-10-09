@@ -37,8 +37,13 @@ type Claude struct {
 	Bin            string            `toml:"bin"`
 	BranchPrefix   string            `toml:"branch_prefix"`
 	Templates      map[string]string `toml:"templates"` // TODO: Seria legal adicionar um template geral e não por serviço
-	Models         map[string]string `toml:"models"`
+	Model          string            `toml:"model"`
 	PermissionMode string            `toml:"permission_mode"`
+}
+
+type Herdr struct {
+	Bin    string `toml:"bin"`
+	Editor string `toml:"editor"`
 }
 
 type Editor struct {
@@ -50,6 +55,7 @@ type Config struct {
 	Jira   Jira   `toml:"jira"`
 	Goals  Goals  `toml:"goals"`
 	Claude Claude `toml:"claude"`
+	Herdr  Herdr  `toml:"herdr"`
 	Editor Editor `toml:"editor"`
 }
 
@@ -101,16 +107,11 @@ func Load() (Config, error) {
 	if cfg.Claude.Bin == "" {
 		cfg.Claude.Bin = "claude"
 	}
-	if cfg.Claude.PermissionMode == "" {
-		cfg.Claude.PermissionMode = "bypassPermissions"
+	if cfg.Herdr.Bin == "" {
+		cfg.Herdr.Bin = "herdr"
 	}
-	if cfg.Claude.Models == nil {
-		cfg.Claude.Models = map[string]string{}
-	}
-	for phase, model := range map[string]string{"plan": "opus", "dev": "sonnet", "review": "opus"} {
-		if _, ok := cfg.Claude.Models[phase]; !ok {
-			cfg.Claude.Models[phase] = model
-		}
+	if cfg.Herdr.Editor == "" {
+		cfg.Herdr.Editor = "nvim ."
 	}
 	return cfg, nil
 }

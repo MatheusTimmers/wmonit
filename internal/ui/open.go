@@ -11,10 +11,6 @@ import (
 	"github.com/timmers/wmonit/internal/config"
 )
 
-// editorClosedMsg chega quando o editor aberto sobre um diretório/arquivo
-// (sem retorno de conteúdo, como abrir o worktree) fechou e a TUI voltou.
-type editorClosedMsg struct{ err error }
-
 // descEditedMsg chega quando o editor da explicação da sessão fechou,
 // trazendo o texto editado de volta para o textbox.
 type descEditedMsg struct {
@@ -49,16 +45,6 @@ func editorCommand(cfg config.Config, paths ...string) *exec.Cmd {
 	fields := strings.Fields(bin)
 	args := append(fields[1:], paths...)
 	return exec.Command(fields[0], args...)
-}
-
-// openEditorCmd suspende a TUI e abre o diretório no editor (nvim por
-// padrão). Editores de terminal seguram o processo; os gráficos (que
-// "forkam") devolvem na hora — em ambos a TUI volta ao fechar/retornar.
-func openEditorCmd(cfg config.Config, dir string) tea.Cmd {
-	cmd := editorCommand(cfg, dir)
-	return tea.ExecProcess(cmd, func(err error) tea.Msg {
-		return editorClosedMsg{err: err}
-	})
 }
 
 // editNoteCmd escreve o texto atual num arquivo temporário, abre o editor

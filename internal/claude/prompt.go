@@ -5,25 +5,25 @@ import (
 	"strings"
 )
 
-// PlanFile é onde o agente de planejamento grava o plano dentro do
-// worktree; o agente de desenvolvimento lê dali. Não deve ser commitado.
-const PlanFile = "WMONIT_PLAN.md"
+const TaskFile = "WMONIT_TASK.md"
 
-// TaskContext reúne tudo o que se sabe sobre a tarefa para compor os
-// prompts do pipeline (plan → dev → review).
+const (
+	DigestFile = "pendencias.md"
+	ReplyFile  = "resposta.md"
+)
+
 type TaskContext struct {
 	Key         string
 	Title       string
 	URL         string
-	UserNote    string   // explicação digitada pelo usuário no wmonit
-	Description string   // descrição da issue/MR
-	Comments    []string // "autor: texto", em ordem cronológica
-	MRInfo      string   // contexto do MR ligado (descrição/comentários)
-	Template    string   // instruções específicas do serviço (config)
-	HasBranch   bool     // branch já existia (MR aberto) — pode haver código feito
+	UserNote    string
+	Description string
+	Comments    []string
+	MRInfo      string
+	Template    string
+	HasBranch   bool
 }
 
-// header monta o bloco de contexto comum a todas as fases.
 func (c TaskContext) header() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Tarefa %s: %s\n", c.Key, c.Title)
@@ -55,77 +55,33 @@ func (c TaskContext) header() string {
 	return b.String()
 }
 
-// buildNotes avisa que o worktree das sessões não builda — submodules e
-// dependências não resolvem nele —, igual para todas as fases; sem isso
-// os agentes queimam tempo/tokens tentando buildar.
 func buildNotes() string {
 	var b strings.Builder
 	b.WriteString("Build e testes neste worktree:\n")
-	b.WriteString("- NÃO rode build nem testes: este é um git worktree isolado e o build NÃO funciona aqui. Não gaste turnos tentando, nem com alternativas.\n")
-	b.WriteString("- Valide por leitura: releia o diff, confira assinaturas/chamadas e as convenções do código existente.\n")
-	b.WriteString("- Registre no resumo final que build e testes ficam por conta do usuário.\n\n")
+	b.WriteString("- NÃO rode build nem testes: o worktree isolado não builda (submodules e dependências não resolvem nele).\n")
+	b.WriteString("- A validação (build/testes) fica por conta do usuário depois do merge da branch.\n\n")
 	return b.String()
 }
 
-// PlanPrompt: agente 1 — compila a descrição e escreve o plano em PlanFile.
-func PlanPrompt(c TaskContext) string {
+func AgentPrompt(c TaskContext) string {
 	var b strings.Builder
-	b.WriteString("Você é o agente de PLANEJAMENTO. Ainda não implemente nada.\n\n")
+	b.WriteString("Você está num workspace do herdr dedicado a esta tarefa; eu acompanho pelo wmonit e entro na conversa quando precisar.\n\n")
 	b.WriteString(c.header())
-	b.WriteString("Sua missão:\n")
+	b.WriteString("Como trabalhar:\n")
 	b.WriteString("- Explore o repositório para entender a arquitetura e onde a tarefa encosta.\n")
 	if c.HasBranch {
-		b.WriteString("- Esta branch já existia e pode conter trabalho em andamento: revise os commits e o diff contra a branch base antes de planejar o que falta.\n")
+		b.WriteString("- Esta branch já existia e pode conter trabalho em andamento: revise os commits e o diff contra a branch base antes de mexer.\n")
 	}
-	b.WriteString("- Compile o entendimento da tarefa (objetivo, requisitos, dúvidas/assunções) e um plano de implementação passo a passo.\n")
-	fmt.Fprintf(&b, "- Grave tudo no arquivo %s na raiz do repositório, em markdown, com as seções: Objetivo, Contexto, Assunções, Plano (passos numerados com arquivos envolvidos), Validação (o que o usuário deve buildar/testar por conta própria).\n", PlanFile)
-	b.WriteString("- NÃO modifique nenhum outro arquivo, NÃO faça commit nem push.\n")
-	b.WriteString("- Ao final, responda com um resumo do plano em poucas linhas.\n")
-	return b.String()
-}
-
-// DevPrompt: agente 2 — implementa seguindo o plano gravado pelo agente 1.
-func DevPrompt(c TaskContext) string {
-	var b strings.Builder
-	b.WriteString("Você é o agente de DESENVOLVIMENTO.\n\n")
-	b.WriteString(c.header())
-	fmt.Fprintf(&b, "Um agente anterior analisou a tarefa e deixou o plano em %s na raiz do repositório. Leia-o antes de começar e siga-o.\n\n", PlanFile)
-	b.WriteString("Instruções:\n")
-	b.WriteString("- Implemente o plano nesta branch (você já está nela).\n")
-	b.WriteString("- Siga as convenções do código existente.\n")
+	b.WriteString("- Escreva um plano curto (passos numerados, arquivos envolvidos) e então implemente nesta branch (você já está nela).\n")
+	b.WriteString("- Se uma dúvida bloquear a implementação, pare e pergunte em vez de assumir.\n")
+	b.WriteString("- Siga as convenções do código existente e as do CLAUDE.md.\n")
 	b.WriteString("- Antes de terminar, releia o diff completo procurando erros óbvios.\n")
-	fmt.Fprintf(&b, "- Faça um único commit, com mensagem de uma frase só (título, sem corpo/descrição) e sem trailer Co-Authored-By; NÃO faça push e NÃO commite o %s.\n", PlanFile)
-	b.WriteString("- Se algum passo do plano se mostrar inviável, adapte e registre o desvio no resumo final.\n")
-	b.WriteString("- Ao final, resuma o que foi feito e o que ficou pendente.\n")
+	b.WriteString("- Faça commit seguindo a convenção de commit do CLAUDE.md; NÃO faça push.\n")
+	fmt.Fprintf(&b, "- NÃO commite o %s.\n", TaskFile)
+	b.WriteString("- Ao final, resuma o que foi feito, os desvios do plano e o que ficou pendente.\n")
 	return b.String()
 }
 
-// ResumePrompt retoma uma conversa interrompida da fase.
-func ResumePrompt() string {
-	return "Continue a tarefa de onde parou, seguindo as instruções anteriores. Revise o estado atual do repositório antes de prosseguir."
-}
-
-// FixPrompt retoma a conversa do agente de desenvolvimento para aplicar
-// as correções apontadas pelo review.
-func FixPrompt(verdict string) string {
-	var b strings.Builder
-	b.WriteString("Um agente revisou o seu trabalho nesta branch e apontou ajustes. Veredito do review:\n\n")
-	b.WriteString(strings.TrimSpace(verdict))
-	b.WriteString("\n\n")
-	b.WriteString(buildNotes())
-	b.WriteString("Aplique as correções necessárias:\n")
-	b.WriteString("- Revise o estado atual do repositório antes de mexer.\n")
-	b.WriteString("- Corrija os problemas apontados; se discordar de algum, justifique no resumo final.\n")
-	b.WriteString("- Releia o diff das correções antes de terminar.\n")
-	fmt.Fprintf(&b, "- Faça um único commit com as correções, com mensagem de uma frase só (título, sem corpo/descrição) e sem trailer Co-Authored-By; NÃO faça push e NÃO commite o %s.\n", PlanFile)
-	b.WriteString("- Ao final, resuma o que foi corrigido.\n")
-	return b.String()
-}
-
-// ReviewMRPrompt: sessão de REVIEW — revisar o merge request de outra
-// pessoa (você é o revisor humano e o Claude te ajuda). O worktree já está
-// na branch do MR. Diferente do agente de review do pipeline, aqui não
-// houve plano: o trabalho a revisar é o diff do MR contra a branch base.
 func ReviewMRPrompt(c TaskContext) string {
 	var b strings.Builder
 	b.WriteString("Você está me ajudando a REVISAR um merge request que outra pessoa abriu. NÃO modifique código — apenas analise e me dê um parecer de review.\n\n")
@@ -139,15 +95,38 @@ func ReviewMRPrompt(c TaskContext) string {
 	return b.String()
 }
 
-// ReviewPrompt: agente 3 — revisa o que foi desenvolvido e só reporta.
-func ReviewPrompt(c TaskContext) string {
+func FreePrompt(service, note string) string {
 	var b strings.Builder
-	b.WriteString("Você é o agente de REVISÃO. NÃO modifique código — apenas analise e reporte.\n\n")
-	b.WriteString(c.header())
-	fmt.Fprintf(&b, "Um agente implementou a tarefa nesta branch seguindo o plano em %s. Revise o trabalho:\n", PlanFile)
-	b.WriteString("- Use git (log/diff contra a branch base) para ver todas as mudanças feitas, incluindo o que não foi commitado.\n")
-	b.WriteString("- Verifique se o plano e a tarefa foram atendidos, procure bugs, casos de borda, problemas de segurança e desvios das convenções do código.\n")
-	b.WriteString("- A revisão é por leitura: build e testes ficam com o usuário, e a falta deles NÃO é motivo para reprovar — avalie o código em si.\n")
-	b.WriteString("- Responda com um veredito: APROVADO ou AJUSTES NECESSÁRIOS, seguido da lista de problemas encontrados (arquivo:linha) por gravidade. Não corrija nada.\n")
+	b.WriteString("Você está num workspace do herdr; eu acompanho pelo wmonit e entro na conversa quando precisar.\n\n")
+	fmt.Fprintf(&b, "Serviço: %s\n\n", service)
+	b.WriteString("Tarefa:\n" + strings.TrimSpace(note) + "\n\n")
+	b.WriteString("Siga as convenções do CLAUDE.md. Se uma dúvida bloquear, pare e pergunte. Ao final, resuma o que foi feito.\n")
 	return b.String()
+}
+
+func ContextOnly(c TaskContext) string {
+	var b strings.Builder
+	b.WriteString("Contexto da tarefa deste workspace (ainda sem pedido de trabalho — espere minhas instruções).\n\n")
+	b.WriteString(c.header())
+	return b.String()
+}
+
+func Kickoff() string {
+	return fmt.Sprintf("Leia o arquivo %s na raiz do projeto: ele traz a tarefa e as instruções. Siga-as.", TaskFile)
+}
+
+func DigestHeader() string {
+	var b strings.Builder
+	b.WriteString("# Pendências\n\n")
+	b.WriteString("Você é meu assistente de pendências. Abaixo está o estado de tudo o que eu tenho em aberto: os workspaces do herdr (cada um é uma tarefa, com um Claude trabalhando nela), as issues do Jira, os MRs do GitLab e as minhas tarefas locais.\n\n")
+	fmt.Fprintf(&b, "Escreva em %s (sobrescreva o arquivo inteiro), em markdown, com títulos curtos:\n\n", ReplyFile)
+	b.WriteString("1. **Travado** — cada pendência que está parada ou esperando algo: o que trava e como destravar, em passos concretos (quem eu preciso acionar, o que responder ao agent, o que revisar).\n")
+	b.WriteString("2. **Próximos passos** — em ordem de prioridade: o que eu faço agora, o que posso delegar a um agent (diga o workspace e o pedido exato) e o que pode esperar.\n")
+	b.WriteString("3. **Riscos** — prazos vencendo, MRs parados, trabalho duplicado entre workspaces.\n\n")
+	b.WriteString("Seja direto. Para investigar, você pode ler a tela de um agent com `herdr agent read <nome> --source recent-unwrapped --lines 120` e olhar os repositórios com git (só leitura). NÃO mande prompts para outros agents, NÃO altere código e NÃO mexa em workspaces sem eu pedir.\n\n")
+	return b.String()
+}
+
+func DigestKickoff() string {
+	return fmt.Sprintf("Atualizei o %s. Leia o arquivo inteiro e siga as instruções do topo, escrevendo a resposta em %s.", DigestFile, ReplyFile)
 }

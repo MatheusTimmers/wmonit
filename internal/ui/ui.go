@@ -11,12 +11,11 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/timmers/wmonit/internal/claude"
 	"github.com/timmers/wmonit/internal/config"
 	"github.com/timmers/wmonit/internal/gitlab"
 	"github.com/timmers/wmonit/internal/history"
+	"github.com/timmers/wmonit/internal/hub"
 	"github.com/timmers/wmonit/internal/jira"
-	"github.com/timmers/wmonit/internal/pipeline"
 	"github.com/timmers/wmonit/internal/session"
 	"github.com/timmers/wmonit/internal/tasks"
 )
@@ -52,7 +51,7 @@ const (
 	modeNormal mode = iota
 	modeAdding
 	modeDescribing
-	modePickingService
+	modePicking
 	modeFiltering
 	modeDetail
 	modeReport
@@ -92,9 +91,9 @@ type Model struct {
 	sess  *session.Store
 	badge string // selo do rodapé (ex.: "🧪 DEMO"); vazio no modo normal
 
-	glSrc  gitlabSource
-	jiSrc  jiraSource
-	runner *pipeline.Runner
+	glSrc gitlabSource
+	jiSrc jiraSource
+	hr    hub.Herdr
 
 	mode mode
 	tab  tab
@@ -148,20 +147,27 @@ type detailState struct {
 	title   string
 	url     string
 	body    string
+	hub     bool
 }
 
-// sessionUI guarda o estado de tela das sessões de trabalho.
 type sessionUI struct {
-	descInput   textarea.Model
-	pending     *pendingSession
-	pickOptions []string
-	pickCursor  int
-	sessInfo    string
-	progress    map[string]claude.Progress
-	ticking     bool
+	descInput  textarea.Model
+	pending    *pendingSession
+	pick       pickState
+	target     string
+	info       string
+	snap       hub.Snapshot
+	lastStatus map[string]string
+	readySince map[string]time.Time
+	delivering map[string]bool
+	hubAsked   time.Time
+	hubAt      time.Time
+	hubReply   string
+	hubWaiting bool
+	hubPending bool
 }
 
-func New(cfg config.Config, store *tasks.Store, hist *history.Store, sess *session.Store, gl gitlabSource, ji jiraSource, badge string) Model {
+func New(cfg config.Config, store *tasks.Store, hist *history.Store, sess *session.Store, gl gitlabSource, ji jiraSource, hr hub.Herdr, badge string) Model {
 	ti := textinput.New()
 	ti.Placeholder = "descrição · data @today/@tomorrow/@2026-06-15 · hora @today 15:00 · prioridade !alta/!critica/!media/!baixa"
 
@@ -175,11 +181,20 @@ func New(cfg config.Config, store *tasks.Store, hist *history.Store, sess *sessi
 	ta.SetHeight(8)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	runner := pipeline.New(cfg.Claude, gl, ji)
+
+	sui := sessionUI{
+		descInput:  ta,
+		lastStatus: map[string]string{},
+		readySince: map[string]time.Time{},
+		delivering: map[string]bool{},
+	}
+	if reply, at, ok := hub.ReadReply(hub.HubDir(sess.Dir()), time.Time{}); ok {
+		sui.hubReply, sui.hubAt = reply, at
+	}
 
 	return Model{
 		cfg: cfg, store: store, hist: hist, sess: sess, badge: badge,
-		glSrc: gl, jiSrc: ji, runner: runner,
+		glSrc: gl, jiSrc: ji, hr: hr,
 		input: ti, filterInput: fi, spin: sp, vp: viewport.New(80, 20),
 		fetch: fetchState{ctx: ctx, cancel: cancel, loading: 2},
 		alert: alertState{
@@ -187,15 +202,12 @@ func New(cfg config.Config, store *tasks.Store, hist *history.Store, sess *sessi
 			seenTodos:   map[int]bool{},
 			issueStatus: map[string]string{},
 		},
-		sui: sessionUI{
-			descInput: ta,
-			progress:  map[string]claude.Progress{},
-		},
+		sui: sui,
 	}
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.fetchAll(), m.spin.Tick, tick(), reminderTick())
+	return tea.Batch(m.fetchAll(), m.spin.Tick, tick(), reminderTick(), m.pollHerdr())
 }
 
 func tick() tea.Cmd {
@@ -304,6 +316,9 @@ func (m *Model) refresh() tea.Cmd {
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if next, cmd, ok := m.updateWorkspaces(msg); ok {
+		return next, cmd
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -358,96 +373,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.recordToday()
 		return m, m.jiraAlerts()
 
-	case sessCreatedMsg:
-		if msg.err != nil {
-			m.sui.sessInfo = errStyle.Render(msg.err.Error())
-			return m, nil
-		}
-		m.sess.Add(msg.sess)
-		m.save(m.sess.Save())
-		m.sui.sessInfo = okStyle.Render("sessão criada: " + msg.sess.Key + " em " + msg.sess.Worktree)
-		// Worktree pronto → o pipeline (plan → dev → review) já inicia.
-		return m.startRun(msg.sess.ID)
-
-	case sessTickMsg:
-		m.pollProgress()
-		if m.anyRunning() {
-			return m, sessTick()
-		}
-		m.sui.ticking = false
-		return m, nil
-
-	case sessFinishedMsg:
-		sess, ok := m.sess.Get(msg.id)
-		if !ok {
-			return m, nil
-		}
-		if sess.Status == session.StatusCancelled {
-			m.save(m.sess.Save())
-			return m, nil
-		}
-		var title, body string
-		m.sess.Update(msg.id, func(s *session.Session) {
-			s.Prompt = msg.prompt
-			// O log final traz o session_id do Claude (para retomar a fase
-			// certa depois) e o resumo da fase.
-			if s.LogFile != "" {
-				if p, err := claude.ReadProgress(s.LogFile); err == nil {
-					m.sui.progress[s.ID] = p
-					if p.SessionID != "" {
-						s.SetClaudeID(s.Phase, p.SessionID)
-					}
-					if p.Result != "" {
-						s.SetResult(s.Phase, p.Result)
-					}
-				}
-			}
-			now := time.Now()
-			s.Finished = &now
-			title = "wmonit — sessão " + s.Key
-			switch {
-			case msg.err != nil:
-				s.Status = session.StatusFailed
-				s.Err = msg.err.Error()
-				body = "falhou na fase " + phaseLabel(s.Phase, s.Mode) + ": " + s.Err
-			case !s.IsReview() && session.NextPhase(s.Phase) != "":
-				// Gate manual: a próxima fase só roda com a sua aprovação.
-				s.Status = session.StatusWaiting
-				body = phaseLabel(s.Phase, s.Mode) + " concluído — revise (enter) e aprove (s)"
-			case s.IsReview():
-				s.Status = session.StatusDone
-				body = "revisão concluída — veja o resultado (enter)"
-			default:
-				s.Status = session.StatusDone
-				body = "review concluído — veja o veredito (enter)"
-			}
-		})
-		m.save(m.sess.Save())
-		return m, notifyCmd(title, body)
-
-	case interactiveDoneMsg:
-		if msg.err != nil {
-			m.sui.sessInfo = errStyle.Render("claude interativo: " + msg.err.Error())
-		} else if sess, ok := m.sess.Get(msg.id); ok {
-			if sess.Status == session.StatusPending {
-				m.sess.Update(msg.id, func(s *session.Session) { s.Status = session.StatusDone })
-				m.save(m.sess.Save())
-			}
-			m.sui.sessInfo = dim.Render("sessão interativa de " + sess.Key + " encerrada — revise com v")
-		}
-		return m, nil
-
-	case editorClosedMsg:
-		// Abrir o worktree no editor não devolve conteúdo; só reportamos erro.
-		if msg.err != nil {
-			m.sui.sessInfo = errStyle.Render("editor: " + msg.err.Error())
-		}
-		return m, nil
-
 	case descEditedMsg:
-		// Voltou do editor da explicação: traz o texto editado pro textbox.
 		if msg.err != nil {
-			m.sui.sessInfo = errStyle.Render("editor: " + msg.err.Error())
+			m.sui.info = errStyle.Render("editor: " + msg.err.Error())
 		} else {
 			m.sui.descInput.SetValue(strings.TrimRight(msg.text, "\n"))
 		}
@@ -457,38 +385,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case sessActionMsg:
-		if msg.err != nil {
-			m.sui.sessInfo = errStyle.Render(msg.err.Error())
-			return m, nil
-		}
-		if msg.remove {
-			for i := range m.sess.Sessions {
-				if m.sess.Sessions[i].ID == msg.id {
-					m.sess.DeleteAt(i)
-					break
-				}
-			}
-			if m.cursor >= len(m.sess.Sessions) && m.cursor > 0 {
-				m.cursor--
-			}
-		} else if msg.status != "" {
-			m.sess.Update(msg.id, func(s *session.Session) { s.Status = msg.status })
-		}
-		// Estado de runtime da sessão que saiu de cena não fica para trás.
-		delete(m.sui.progress, msg.id)
-		m.runner.Forget(msg.id)
-		m.save(m.sess.Save())
-		return m, nil
-
 	case tea.KeyMsg:
 		switch m.mode {
 		case modeAdding:
 			return m.updateAdding(msg)
 		case modeDescribing:
 			return m.updateDescribe(msg)
-		case modePickingService:
-			return m.updatePickService(msg)
+		case modePicking:
+			return m.updatePick(msg)
 		case modeFiltering:
 			return m.updateFilter(msg)
 		case modeDetail:

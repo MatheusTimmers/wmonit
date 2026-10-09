@@ -18,14 +18,11 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Jira.Auth != "bearer" {
 		t.Errorf("Jira.Auth = %q, esperado %q", cfg.Jira.Auth, "bearer")
 	}
-	if cfg.Claude.PermissionMode != "bypassPermissions" {
-		t.Errorf("Claude.PermissionMode = %q, esperado %q", cfg.Claude.PermissionMode, "bypassPermissions")
+	if cfg.Claude.PermissionMode != "" || cfg.Claude.Model != "" {
+		t.Errorf("Claude.PermissionMode/Model deveriam ficar vazios: %q %q", cfg.Claude.PermissionMode, cfg.Claude.Model)
 	}
-	wantModels := map[string]string{"plan": "opus", "dev": "sonnet", "review": "opus"}
-	for phase, want := range wantModels {
-		if got := cfg.Claude.Models[phase]; got != want {
-			t.Errorf("Claude.Models[%q] = %q, esperado %q", phase, got, want)
-		}
+	if cfg.Herdr.Bin != "herdr" || cfg.Herdr.Editor != "nvim ." {
+		t.Errorf("Herdr = %+v", cfg.Herdr)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"github.com/timmers/wmonit/internal/config"
 	"github.com/timmers/wmonit/internal/demo"
 	"github.com/timmers/wmonit/internal/gitlab"
+	"github.com/timmers/wmonit/internal/herdr"
 	"github.com/timmers/wmonit/internal/history"
 	"github.com/timmers/wmonit/internal/jira"
 	"github.com/timmers/wmonit/internal/paths"
@@ -48,11 +49,11 @@ func main() {
 
 	var m ui.Model
 	if *demoMode {
-		m = ui.New(cfg, store, hist, sess, demo.GitLabSource{}, demo.JiraSource{}, "🧪 DEMO")
+		m = ui.New(cfg, store, hist, sess, demo.GitLabSource{}, demo.JiraSource{}, demo.NewHerdr(), "🧪 DEMO")
 	} else {
 		gl := gitlab.New(cfg.GitLab.URL, cfg.GitLab.Token)
 		ji := jira.New(cfg.Jira.URL, cfg.Jira.Auth, cfg.Jira.Email, cfg.Jira.Token, cfg.Jira.ComplexityField)
-		m = ui.New(cfg, store, hist, sess, gl, ji, "")
+		m = ui.New(cfg, store, hist, sess, gl, ji, herdr.New(cfg.Herdr.Bin), "")
 	}
 
 	if _, err := tea.NewProgram(m, tea.WithAltScreen()).Run(); err != nil {

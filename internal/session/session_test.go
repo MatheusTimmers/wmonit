@@ -1,8 +1,7 @@
 package session
 
 import (
-	"os"
-	"path/filepath"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -14,7 +13,7 @@ func TestStoreRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.Add(Session{ID: NewID("ABC-123"), Key: "ABC-123", Title: "teste", Status: StatusPending})
+	s.Add(Session{ID: NewID("ABC-123"), Key: "ABC-123", Title: "teste", Label: "ABC-123", Workspace: "w3", Status: StatusActive})
 	if err := s.Save(); err != nil {
 		t.Fatal(err)
 	}
@@ -26,23 +25,25 @@ func TestStoreRoundTrip(t *testing.T) {
 	if len(s2.Sessions) != 1 || s2.Sessions[0].Key != "ABC-123" {
 		t.Fatalf("round trip falhou: %+v", s2.Sessions)
 	}
-	if !s2.HasActiveFor("ABC-123") {
-		t.Fatal("HasActiveFor deveria achar sessão pendente")
+	if !s2.HasActiveFor("ABC-123") || s2.HasActiveFor("") {
+		t.Fatal("HasActiveFor deveria achar só a chave ativa")
 	}
-
-	if _, ok := s2.Get(s2.Sessions[0].ID); !ok {
-		t.Fatal("Get não achou a sessão")
+	if got, ok := s2.ByWorkspace("w3"); !ok || got.Key != "ABC-123" {
+		t.Fatal("ByWorkspace não achou a sessão")
 	}
-	if !s2.Update(s2.Sessions[0].ID, func(x *Session) { x.Status = StatusCompleted }) {
+	if !s2.LabelTaken("abc-123") {
+		t.Fatal("LabelTaken deveria ignorar maiúsculas")
+	}
+	id := s2.Sessions[0].ID
+	if !s2.Update(id, func(x *Session) { x.Status = StatusCompleted }) {
 		t.Fatal("Update não achou a sessão")
 	}
-	if s2.HasActiveFor("ABC-123") {
-		t.Fatal("sessão completed não é ativa")
+	if s2.HasActiveFor("ABC-123") || s2.LabelTaken("ABC-123") {
+		t.Fatal("sessão concluída não é ativa")
 	}
-
-	s2.DeleteAt(0)
+	s2.Delete(id)
 	if len(s2.Sessions) != 0 {
-		t.Fatal("DeleteAt não removeu")
+		t.Fatal("Delete não removeu")
 	}
 }
 
@@ -56,92 +57,33 @@ func TestNewID(t *testing.T) {
 	}
 }
 
-func TestLogDir(t *testing.T) {
-	dir := t.TempDir()
-	s, err := LoadFrom(dir)
-	if err != nil {
+func TestLegacyPipelineSessionStaysActive(t *testing.T) {
+	var s Session
+	raw := `{"id":"x","key":"ABC-1","status":"waiting","phase":"plan","claude_ids":{"plan":"id"}}`
+	if err := json.Unmarshal([]byte(raw), &s); err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(dir, "logs")
-	if s.LogDir() != want {
-		t.Fatalf("LogDir = %s, esperado %s", s.LogDir(), want)
+	if !s.Active() {
+		t.Fatal("sessão do pipeline antigo deveria continuar ativa")
 	}
-	_ = os.MkdirAll(s.LogDir(), 0o755)
-}
-
-func TestPlan(t *testing.T) {
-	cases := []struct {
-		name    string
-		sess    Session
-		wantOK  bool
-		wantAct Action
-	}{
-		{"review pendente", Session{Mode: ModeReview, Status: StatusPending},
-			true, Action{Phase: PhaseReview}},
-		{"review falhou retoma", Session{Mode: ModeReview, Status: StatusFailed, Phase: PhaseReview,
-			ClaudeIDs: map[string]string{PhaseReview: "rev-id"}},
-			true, Action{Phase: PhaseReview, ResumeID: "rev-id"}},
-		{"review concluída não roda", Session{Mode: ModeReview, Status: StatusDone},
-			false, Action{}},
-
-		{"implement pendente → plan", Session{Status: StatusPending},
-			true, Action{Phase: PhasePlan}},
-		{"waiting no plan → dev", Session{Status: StatusWaiting, Phase: PhasePlan},
-			true, Action{Phase: PhaseDev}},
-		{"waiting no dev → review", Session{Status: StatusWaiting, Phase: PhaseDev},
-			true, Action{Phase: PhaseReview}},
-		{"falhou no plan retoma sem fix", Session{Status: StatusFailed, Phase: PhasePlan,
-			ClaudeIDs: map[string]string{PhasePlan: "plan-id"}},
-			true, Action{Phase: PhasePlan, ResumeID: "plan-id"}},
-		{"falhou no dev sem review → resume", Session{Status: StatusFailed, Phase: PhaseDev,
-			ClaudeIDs: map[string]string{PhaseDev: "dev-id"}},
-			true, Action{Phase: PhaseDev, ResumeID: "dev-id"}},
-		{"falhou no dev após review → fix", Session{Status: StatusFailed, Phase: PhaseDev,
-			ClaudeIDs: map[string]string{PhaseDev: "dev-id"}, Results: map[string]string{PhaseReview: "AJUSTAR"}},
-			true, Action{Phase: PhaseDev, ResumeID: "dev-id", UseFix: true}},
-		{"pronta → ciclo de correção no dev", Session{Status: StatusDone, Phase: PhaseReview,
-			ClaudeIDs: map[string]string{PhaseDev: "dev-id"}, Results: map[string]string{PhaseReview: "AJUSTAR"}},
-			true, Action{Phase: PhaseDev, ResumeID: "dev-id", UseFix: true}},
-		{"pronta usa ClaudeID legado", Session{Status: StatusDone, Phase: PhaseReview,
-			ClaudeID: "legado", Results: map[string]string{PhaseReview: "AJUSTAR"}},
-			true, Action{Phase: PhaseDev, ResumeID: "legado", UseFix: true}},
-		{"pronta sem conversa não roda", Session{Status: StatusDone, Phase: PhaseReview},
-			false, Action{}},
-		{"rodando não roda", Session{Status: StatusRunning, Phase: PhaseDev},
-			false, Action{}},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			act, ok := c.sess.Plan()
-			if ok != c.wantOK {
-				t.Fatalf("ok = %v, esperado %v", ok, c.wantOK)
-			}
-			if ok && act != c.wantAct {
-				t.Errorf("Action = %+v, esperado %+v", act, c.wantAct)
-			}
-		})
+	if s.IssueKey() != "ABC-1" || s.MRRef() != "" {
+		t.Fatalf("links inesperados: issue=%q mr=%q", s.IssueKey(), s.MRRef())
 	}
 }
 
-func TestPhaseHelpers(t *testing.T) {
-	s := Session{Key: "ABC-123"}
-	if !s.IsIssue() {
-		t.Errorf("chave Jira sem Kind deveria ser issue (legado)")
-	}
-	s.Kind = KindMR
+func TestLinks(t *testing.T) {
+	s := Session{Key: "hades!42", Kind: KindMR, Issue: "ROT-9"}
 	if s.IsIssue() {
-		t.Errorf("Kind=mr deveria vencer o formato da chave")
+		t.Error("Kind=mr deveria vencer o formato da chave")
 	}
-	s.SetClaudeID(PhaseDev, "id-dev")
-	s.SetClaudeID(PhaseReview, "id-review")
-	if s.ClaudeIDs[PhaseDev] != "id-dev" || s.ClaudeID != "id-review" {
-		t.Errorf("SetClaudeID: ids = %v, último = %q", s.ClaudeIDs, s.ClaudeID)
+	if s.MRRef() != "hades!42" || s.IssueKey() != "ROT-9" {
+		t.Errorf("links = %q %q", s.MRRef(), s.IssueKey())
 	}
-	s.SetResult(PhaseReview, "APROVADO")
-	if s.Results[PhaseReview] != "APROVADO" {
-		t.Errorf("SetResult não gravou")
+	free := Session{Kind: KindFree, Service: "wmonit", Repo: "/src/wmonit", Worktree: "/src/wmonit"}
+	if free.OwnsWorktree() || free.Name() != "wmonit" {
+		t.Errorf("sessão livre: owns=%v name=%q", free.OwnsWorktree(), free.Name())
 	}
-	if NextPhase(PhasePlan) != PhaseDev || NextPhase(PhaseDev) != PhaseReview || NextPhase(PhaseReview) != "" {
-		t.Errorf("NextPhase fora de ordem")
+	if !IsJiraKey("ABC-123") || IsJiraKey("hades!42") {
+		t.Error("IsJiraKey")
 	}
 }

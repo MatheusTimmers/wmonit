@@ -46,7 +46,7 @@ func taskPrioBadge(p string) string {
 	return ""
 }
 
-var tabNames = []string{"Hoje", "Desempenho", "GitLab", "Jira", "Tarefas", "Sessões"}
+var tabNames = []string{"Hoje", "Desempenho", "GitLab", "Jira", "Tarefas", "Workspaces"}
 
 var ptMonths = [...]string{"jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"}
 
@@ -196,8 +196,8 @@ func (m Model) content() string {
 	switch m.mode {
 	case modeDescribing:
 		return m.viewDescribe()
-	case modePickingService:
-		return m.viewPickService()
+	case modePicking:
+		return m.viewPick()
 	case modeDetail:
 		if m.detail.loading {
 			return dim.Render("carregando…")
@@ -263,17 +263,17 @@ func (m Model) footer(vp interface{ ScrollPercent() float64 }) string {
 	}
 	help := "tab/1-6 abas · g relatório do dia · j/k rolar · r atualizar · q sair"
 	if m.mode == modeDescribing {
-		help = "ctrl+d inicia · ctrl+r alterna dev/revisão · esc cancela"
-	} else if m.mode == modePickingService {
-		help = "j/k escolher serviço · enter confirmar · esc cancelar"
+		help = "ctrl+d envia/cria · ctrl+n só cria · ctrl+r alterna dev/revisão · ctrl+e editor · esc cancela"
+	} else if m.mode == modePicking {
+		help = "j/k escolher · enter confirmar · esc cancelar"
 	} else if m.mode == modeDetail {
 		help = "esc/q voltar · o abrir no navegador · j/k rolar"
 	} else if m.mode == modeReport {
 		help = "esc/q voltar · j/k rolar · r atualizar"
 	} else if m.tab == tabGitLab || m.tab == tabJira {
-		help = "j/k selecionar · enter detalhes · o navegador · c sessão · / buscar · r atualizar · q sair"
+		help = "j/k selecionar · enter detalhes · o navegador · c workspace · / buscar · r atualizar · q sair"
 	} else if m.tab == tabSessoes {
-		help = "s iniciar/aprovar/corrigir · enter resultado · t interativo · v diff · e editor · f concluir · x cancelar · d/D remover"
+		help = "n novo · a abrir no herdr · p mensagem · i pendências · enter detalhes · L ligar · u adotar · w reabrir · x esc · v diff · o link · f/F concluir · d/D remover"
 	} else if m.tab == tabTarefas {
 		if m.mode == modeAdding {
 			help = "enter salvar · esc cancelar"
