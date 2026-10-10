@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/BurntSushi/toml"
 )
 
 // TestLoadDefaults cobre os valores padrão aplicados quando não há
@@ -73,5 +75,31 @@ email = "file@example.com"
 	}
 	if cfg.Jira.Email != "env@example.com" {
 		t.Errorf("Jira.Email = %q, esperado env var", cfg.Jira.Email)
+	}
+}
+
+func TestExampleConfigMatchesStruct(t *testing.T) {
+	t.Setenv("WMONIT_CONFIG", filepath.Join("..", "..", "config.example.toml"))
+	t.Setenv("WMONIT_GITLAB_URL", "")
+	t.Setenv("WMONIT_JIRA_URL", "")
+	md, err := toml.DecodeFile(Path(), &Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u := md.Undecoded(); len(u) > 0 {
+		t.Fatalf("chaves do exemplo que a config não conhece: %v", u)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := cfg.Herdr
+	if !h.EventsOn() || !h.MetadataOn() || !h.NotifyDesktop() || h.NotifyHerdr() || len(cfg.Claude.Models) != 3 {
+		t.Fatalf("padrões = %+v %v", h, cfg.Claude.Models)
+	}
+	off := false
+	h = Herdr{Events: &off, Metadata: &off, Notify: "herdr"}
+	if h.EventsOn() || h.MetadataOn() || h.NotifyDesktop() || !h.NotifyHerdr() {
+		t.Fatalf("desligados = %+v", h)
 	}
 }

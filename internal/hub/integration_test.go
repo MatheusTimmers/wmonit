@@ -34,7 +34,13 @@ func TestRealHerdr(t *testing.T) {
 		t.Fatalf("herdr offline: %v", snap.Err)
 	}
 	sess := session.Session{Key: "IT-1", Service: "it", Repo: dir, Worktree: dir, Kind: session.KindIssue, Status: session.StatusActive}
-	got, err := Open(h, snap, sess, OpenOpts{Editor: "echo editor-ok", TaskText: "contexto", Kickoff: claude.Kickoff()})
+	got, err := Open(h, snap, sess, OpenOpts{
+		Editor:   "echo editor-ok",
+		TaskText: "contexto",
+		Kickoff:  claude.Kickoff(),
+		Setup:    []string{"touch setup-ok"},
+		Tabs:     []ExtraTab{{Label: "dev", Command: "echo dev-ok"}},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,8 +55,18 @@ func TestRealHerdr(t *testing.T) {
 	for _, tb := range tabs {
 		labels = append(labels, tb.Label)
 	}
-	if len(labels) != 3 || labels[0] != TabTerminal || labels[1] != TabClaude || labels[2] != TabEditor {
+	if len(labels) != 4 || labels[0] != TabTerminal || labels[1] != TabClaude || labels[2] != TabEditor || labels[3] != "dev" {
 		t.Errorf("abas = %v", labels)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(filepath.Join(dir, "setup-ok")); err == nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "setup-ok")); err != nil {
+		t.Errorf("setup não rodou no terminal: %v", err)
 	}
 
 	snap = Poll(h)
@@ -77,23 +93,42 @@ func TestRealHerdr(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		deadline := time.Now().Add(60 * time.Second)
-		readyFor := 0
-		for time.Now().Before(deadline) && readyFor < 2 {
-			time.Sleep(1500 * time.Millisecond)
-			if cur, ok := Poll(h).Agent(a.Name); ok && cur.Ready() {
-				readyFor++
-			} else {
-				readyFor = 0
-			}
+		if _, err := h.Wait(a.Name, 60*time.Second, herdr.StatusIdle, herdr.StatusDone); err != nil {
+			t.Fatal(err)
 		}
+		time.Sleep(3 * time.Second)
 		sent, err := Deliver(h, Poll(h), &got)
 		if err != nil || !sent || got.PendingPrompt != "" {
 			t.Fatalf("Deliver real = %v %v pendente=%q", sent, err, got.PendingPrompt)
 		}
 		time.Sleep(2 * time.Second)
 		cur, _ := Poll(h).Agent(a.Name)
-		t.Logf("depois da entrega: %s", cur.Status)
+		t.Logf("depois da entrega: %s, sessão do Claude %s", cur.Status, cur.SessionID())
+		if cur.SessionID() != got.ClaudeSession {
+			t.Errorf("o Claude deveria usar o id fixado: herdr=%q wmonit=%q", cur.SessionID(), got.ClaudeSession)
+		}
+		if _, err := h.Wait(a.Name, 120*time.Second, herdr.StatusIdle, herdr.StatusDone); err != nil {
+			t.Fatal(err)
+		}
+		if claude.TranscriptPath(got.ClaudeSession) == "" {
+			t.Fatal("transcript da conversa não encontrado")
+		}
+		if err := h.CloseWorkspace(got.Workspace); err != nil {
+			t.Fatal(err)
+		}
+		again, err := Open(h, Poll(h), got, OpenOpts{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = h.CloseWorkspace(again.Workspace) }()
+		if again.ClaudeSession != got.ClaudeSession {
+			t.Fatalf("reabrir deveria manter a conversa: %q -> %q", got.ClaudeSession, again.ClaudeSession)
+		}
+		re, _ := Poll(h).Agent(again.Agent)
+		t.Logf("reaberto: %s, conversa %q", re.Status, re.Title)
+		if re.SessionID() != got.ClaudeSession {
+			t.Errorf("deveria retomar a mesma conversa: herdr=%q wmonit=%q", re.SessionID(), got.ClaudeSession)
+		}
 	}
 
 	cp := got

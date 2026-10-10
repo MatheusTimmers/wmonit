@@ -10,6 +10,9 @@ tarefas manuais.
 go build -o wmonit .
 ```
 
+Precisa do Go 1.26 ou mais novo (com o `GOTOOLCHAIN` padrão, o `go` baixa a
+versão certa sozinho).
+
 ## Modo demo (sem GitLab/Jira)
 
 Para ver as telas e testar a interface sem nenhuma conexão, rode com dados
@@ -139,62 +142,147 @@ salvas em `~/.local/share/wmonit/tasks.json`.
 
 A aba **Workspaces** (tecla `6`) é um hub de workspaces do
 [herdr](https://herdr.dev): cada tarefa que você trata vira um workspace com
-três abas — **terminal**, **claude** e **nvim** — na pasta do trabalho. O
-wmonit cria, acompanha e fecha esses workspaces, e conversa com o Claude de
-cada um sem você sair da lista. Funciona no Linux e no Windows; o herdr precisa
-estar aberto (o wmonit fala com ele pela CLI `herdr`).
+as abas **terminal**, **claude** e **nvim** (mais as que o repositório pedir)
+na pasta do trabalho. O wmonit cria, acompanha e fecha esses workspaces, e
+conversa com o Claude de cada um sem você sair da lista. Funciona no Linux e no
+Windows; o herdr precisa estar aberto.
 
 **Criar um workspace:**
 
 - Nas abas GitLab/Jira, `c` no item selecionado. Uma issue ganha um
-  **worktree** com uma branch nova com o nome da chave (`ABC-123`;
-  `branch_prefix` em `[claude]` para algo como `feature/`), criada a partir do
-  default do remoto; um MR usa a branch existente. O MR de outra pessoa que
-  aguarda seu review vira **revisão** (o Claude só analisa e entrega um
-  parecer); `ctrl+r` alterna.
+  **worktree** com uma branch nova (`branch_prefix` + chave, editável no
+  formulário), criada a partir do default do remoto; um MR usa a branch
+  existente. O MR de outra pessoa que aguarda seu review já vem em modo
+  **revisão** (o Claude só analisa e entrega um parecer).
 - Na aba Workspaces, `n` cria um workspace **livre**, direto na pasta do
   repositório, sem worktree próprio.
-- Nos dois casos você **escolhe o repositório** (as subpastas git de
-  `sources_dir`; o deduzido da `#TAG`/projeto do MR já vem selecionado) e
-  escreve o que fazer. `ctrl+d` cria e manda a tarefa ao Claude; `ctrl+n` só
-  cria (o Claude fica esperando você).
+- `wmonit --open <chave ou link>` abre direto o formulário de uma issue ou MR
+  (chave `ABC-123`, link do Jira, link do MR ou `projeto!123`).
+
+O formulário pede o **repositório** (as subpastas git de `sources_dir`; `/`
+filtra; o deduzido da `#TAG`/projeto do MR já vem selecionado), a branch, o
+modo do MR, o **modelo** do Claude (`models` em `[claude]`), o que fazer
+(`ctrl+e` abre no editor) e se a tarefa já vai para o Claude ou se ele só
+fica esperando. `esc` cancela.
 
 O contexto — sua explicação, descrição e comentários da issue, descrição e
-comentários do MR ligado e o template do serviço (`[claude.templates]`) — vai
-para `WMONIT_TASK.md` na raiz do workspace (fora do git via `info/exclude`), e
-o Claude recebe só "leia o `WMONIT_TASK.md`". Se o Claude ainda não confia na
-pasta, ele para pedindo confirmação: a linha mostra `⏳` e o pedido sai sozinho
-assim que ele ficar livre.
+comentários do MR ligado e os templates (`template` geral, `[claude.templates]`
+por serviço e o `template` do `.wmonit.toml`) — vai para `WMONIT_TASK.md` na
+raiz do workspace (fora do git via `info/exclude`), e o Claude recebe só "leia
+o `WMONIT_TASK.md`". Se o Claude ainda não confia na pasta, ele para pedindo
+confirmação: a linha mostra `⏳` e o pedido sai sozinho assim que ele ficar
+livre.
+
+**Conversa do Claude:** cada workspace fixa o id da conversa
+(`--session-id`). Reabrir com `w` retoma a mesma conversa (`--resume`), mesmo
+depois de reiniciar a máquina; se o histórico sumiu, começa uma nova. A linha
+mostra quantos pedidos, tokens e a última atividade (lidos do transcript do
+Claude Code); com `[claude.prices]`, também o custo estimado.
 
 **Acompanhar:** cada linha mostra o estado do Claude como o herdr o vê
 (▶ trabalhando · ⏸ precisa de você · ✔ terminou · ○ parado), os links com o
-Jira (com o status) e o GitLab, e erros. Uma **notificação** avisa quando um
-Claude trava esperando você ou termina. Workspaces do herdr que não são de
-nenhuma tarefa (abertos pelo `dev`, por exemplo) aparecem em "Outros" e podem
-ser **adotados**.
+Jira (com o status) e o GitLab, a situação do MR (CI quebrado e quais jobs,
+conflito, threads abertas, aprovações faltando, draft, pronto para merge) e
+erros. O wmonit assina os **eventos** do herdr pelo socket, então a lista muda
+na hora em que algo acontece; sem o socket ele volta a consultar a cada poucos
+segundos. Uma **notificação** (desktop, toast do herdr ou as duas — `notify`
+em `[herdr]`) avisa quando um Claude trava esperando você ou termina, e o
+título da janela mostra quantos precisam de você. Workspaces do herdr que não
+são de nenhuma tarefa aparecem em "Outros" e podem ser **adotados**.
+
+**Sidebar do herdr:** o wmonit publica em cada workspace os tokens
+`$wm_task`, `$wm_jira`, `$wm_mr`, `$wm_ci`, `$wm_git` e `$wm_todo`. Para vê-los
+na sidebar, adicione ao `config.toml` do herdr:
+
+```toml
+[ui.sidebar.spaces]
+rows = [["state_icon", "workspace"], ["branch", "git_status"], ["$wm_jira", "$wm_mr", "$wm_ci"], ["$wm_todo"]]
+```
 
 **Pendências:** a primeira linha é um agent dedicado (workspace `wmonit`)
 que ajuda a lidar com tudo o que está em aberto. `i` monta um resumo — cada
-workspace com o estado do Claude, o fim da tela dele, git (commits e arquivos
-pendentes), Jira e GitLab, mais as issues sem workspace, os MRs na sua fila e
-as tarefas locais — em `~/.local/share/wmonit/pendencias/pendencias.md` e pede
-ao agent o que está travado, como destravar cada coisa e o que fazer a seguir.
-A resposta aparece no próprio wmonit (`enter` na linha 🧭) e você continua a
-conversa com `p`, ou no herdr com `a`.
+workspace com o estado e a conversa do Claude, o fim da tela dele, git, Jira,
+a situação do MR, mais as issues sem workspace, os MRs na sua fila e as
+tarefas locais — em `~/.local/share/wmonit/pendencias/pendencias.md` e pede ao
+agent o que está travado, como destravar cada coisa e o que fazer a seguir. A
+resposta aparece no próprio wmonit assim que o arquivo é escrito (`enter` na
+linha 🧭) e você continua a conversa com `p`, ou no herdr com `a`.
+
+**Entregar e limpar:** `s` faz o push da branch, abre o MR no GitLab (título
+com a `#CHAVE`, descrição com o link da issue e sua explicação; `draft_mr` em
+`[gitlab]` abre como draft; precisa de token com scope `api`) ou reaproveita o
+que já existe, e move a issue no Jira para `review_transition`. Ao criar um
+workspace de issue, ela vai para `start_transition`. Workspaces cujo MR foi
+mergeado/fechado ou cuja issue foi resolvida ganham um aviso 🧹; `C` mostra
+quais são e, apertado de novo, conclui todos.
 
 Na aba Workspaces:
 
-- `enter` — detalhes: links, git, sua explicação e a tela atual do Claude.
+- `enter` — detalhes: links, git, MR, conversa do Claude, sua explicação e a
+  tela atual do Claude.
 - `a` — abre o workspace no herdr · `p` — manda uma mensagem ao Claude dele
   (sobe um Claude novo se não houver) · `x` — manda `esc` (interrompe).
 - `i` — pede a análise de pendências.
-- `L` — liga o workspace a uma issue do Jira ou a um MR · `u` — adota um
-  workspace de fora · `w` — reabre um workspace que foi fechado no herdr.
+- `s` — entrega (push, MR, Jira) · `C` — limpa os que já terminaram.
+- `L` — liga o workspace a uma issue do Jira ou a um MR (`/` filtra) · `u` —
+  adota um workspace de fora · `w` — reabre um workspace que foi fechado.
 - `v` — diff contra a branch base · `o` — abre a issue/MR no navegador.
 - `f` — conclui: fecha o workspace e remove o worktree (recusa se houver
   mudanças não commitadas; `F` força). A branch continua no repositório.
 - `d`/`D` — o mesmo, e tira o workspace da lista.
 
+### Configuração por repositório (`.wmonit.toml`)
+
+Um `.wmonit.toml` na raiz do repositório ajusta os workspaces dele:
+
+```toml
+setup = ["cp ../.env .env", "npm ci"]   # roda na aba terminal ao criar
+model = "sonnet"                        # modelo padrão do Claude
+permission_mode = "acceptEdits"
+editor = "nvim ."
+target_branch = "develop"               # destino do MR aberto com s
+template = "Rode npm test antes de commitar."
+
+[[tabs]]
+label = "dev"
+command = "npm run dev"
+```
+
+### Plugin do herdr
+
+`wmonit herdr-plugin install` liga o wmonit ao herdr como plugin:
+
+- ação `wmonit.open` — abre o wmonit num popup por cima do workspace atual;
+- ctrl+clique num link do Jira ou de um MR (das URLs da sua config) abre o
+  popup já no formulário daquela tarefa;
+- ao iniciar, o herdr chama `wmonit herdr-action sync`, que republica os
+  tokens da sidebar (eles não sobrevivem a um restart do servidor).
+
+Para abrir com uma tecla, no `config.toml` do herdr:
+
+```toml
+[[keys.command]]
+key = "prefix+w"
+type = "plugin_action"
+command = "wmonit.open"
+description = "wmonit"
+```
+
+`wmonit herdr-plugin uninstall` desliga; `wmonit herdr-plugin manifest`
+mostra o manifesto gerado.
+
 Os workspaces ficam em `~/.local/share/wmonit/sessions.json`. Configure a pasta
-de fontes, os worktrees e o Claude em `[claude]`, e o binário do herdr e o
-comando da aba de editor em `[herdr]`.
+de fontes, os worktrees e o Claude em `[claude]`, e o herdr em `[herdr]`
+(`session` usa uma sessão nomeada; `events`, `metadata` e `notify` ligam e
+desligam os recursos acima). `WMONIT_CONFIG` aponta outro arquivo de config.
+
+### Teste contra um herdr real
+
+```sh
+herdr --session wmt server &
+WMONIT_HERDR_IT=wmt go test ./internal/herdr ./internal/hub -run TestReal -v
+WMONIT_HERDR_IT=wmt WMONIT_HERDR_IT_PROMPT=1 go test ./internal/hub -run TestRealHerdr -v
+```
+
+O segundo também confirma a pasta no Claude, entrega a tarefa, fecha e reabre o
+workspace conferindo que a conversa foi retomada.

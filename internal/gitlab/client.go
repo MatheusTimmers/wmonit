@@ -38,9 +38,13 @@ type MR struct {
 	References   struct {
 		Full string `json:"full"`
 	} `json:"references"`
-	CreatedAt time.Time  `json:"created_at"`
-	UpdatedAt time.Time  `json:"updated_at"`
-	MergedAt  *time.Time `json:"merged_at"`
+	CreatedAt           time.Time  `json:"created_at"`
+	UpdatedAt           time.Time  `json:"updated_at"`
+	MergedAt            *time.Time `json:"merged_at"`
+	Draft               bool       `json:"draft"`
+	HasConflicts        bool       `json:"has_conflicts"`
+	DetailedMergeStatus string     `json:"detailed_merge_status"`
+	TargetBranch        string     `json:"target_branch"`
 }
 
 // Note é um comentário de um MR.

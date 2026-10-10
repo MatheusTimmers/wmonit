@@ -30,8 +30,14 @@ func (f *fakeHerdr) log(format string, args ...any) {
 	f.calls = append(f.calls, fmt.Sprintf(format, args...))
 }
 
-func (f *fakeHerdr) Workspaces() ([]herdr.Workspace, error) { return f.workspaces, nil }
-func (f *fakeHerdr) Agents() ([]herdr.Agent, error)         { return f.agents, nil }
+func (f *fakeHerdr) State() (herdr.State, error) {
+	return herdr.State{Workspaces: f.workspaces, Agents: f.agents}, nil
+}
+func (f *fakeHerdr) ReportMetadata(ws, source string, tokens map[string]string) error {
+	f.log("meta %s %v", ws, tokens)
+	return nil
+}
+func (f *fakeHerdr) Notify(title, body, sound string) error { return nil }
 func (f *fakeHerdr) Panes(string) ([]herdr.Pane, error)     { return nil, nil }
 func (f *fakeHerdr) Tabs(string) ([]herdr.Tab, error)       { return nil, nil }
 
@@ -96,13 +102,16 @@ func TestOpenBuildsDevLayout(t *testing.T) {
 	if got.Label != "abc-123-2" {
 		t.Errorf("label deveria fugir do workspace existente: %q", got.Label)
 	}
+	if got.ClaudeSession == "" {
+		t.Fatal("Open deveria fixar o id da conversa do Claude")
+	}
 	want := []string{
 		"workspace w2 abc-123-2 " + dir,
 		"rename w2:t1 terminal",
 		"tab w2 claude",
 		"tab w2 nvim",
 		"run w2:p3 nvim .",
-		"start abc-123-2 claude w2:p2 --model opus",
+		"start abc-123-2 claude w2:p2 --model opus --session-id " + got.ClaudeSession,
 	}
 	if strings.Join(f.calls, "\n") != strings.Join(want, "\n") {
 		t.Errorf("chamadas:\n%s\nesperado:\n%s", strings.Join(f.calls, "\n"), strings.Join(want, "\n"))
@@ -266,5 +275,49 @@ func TestReplyAndOthers(t *testing.T) {
 	others := Others(snap, []session.Session{{Label: "abc", Status: session.StatusActive}})
 	if len(others) != 1 || others[0].Label != "bode_os" {
 		t.Errorf("Others = %+v", others)
+	}
+}
+
+func TestReopenResumesConversation(t *testing.T) {
+	cfgDir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", cfgDir)
+	id := claude.NewSessionID()
+	proj := filepath.Join(cfgDir, "projects", "-src-x")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proj, id+".jsonl"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	f := &fakeHerdr{}
+	sess := session.Session{Key: "ABC-1", Label: "abc-1", Repo: dir, Worktree: dir, Kind: session.KindIssue, Status: session.StatusActive, ClaudeSession: id}
+	got, err := Open(f, Poll(f), sess, OpenOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := f.calls[len(f.calls)-1]
+	if !strings.HasSuffix(last, "--resume "+id) || got.ClaudeSession != id {
+		t.Fatalf("deveria retomar a conversa: %q %+v", last, got)
+	}
+
+	sess.ClaudeSession = "00000000-0000-4000-8000-000000000000"
+	f = &fakeHerdr{}
+	got, _ = Open(f, Poll(f), sess, OpenOpts{})
+	last = f.calls[len(f.calls)-1]
+	if !strings.Contains(last, "--session-id "+got.ClaudeSession) || got.ClaudeSession == sess.ClaudeSession {
+		t.Fatalf("sem transcript deveria começar conversa nova: %q", last)
+	}
+}
+
+func TestReconcileTracksClaudeSession(t *testing.T) {
+	snap := Snapshot{
+		At:         time.Now(),
+		Workspaces: []herdr.Workspace{{ID: "w1", Label: "abc"}},
+		Agents:     []herdr.Agent{{Name: "abc", Kind: "claude", WorkspaceID: "w1", Session: &herdr.AgentSession{Kind: "id", Value: "novo"}}},
+	}
+	s := session.Session{Label: "abc", Workspace: "w1", Status: session.StatusActive, ClaudeSession: "velho"}
+	if !Reconcile(&s, snap) || s.ClaudeSession != "novo" {
+		t.Fatalf("reconcile = %+v", s)
 	}
 }

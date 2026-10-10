@@ -5,11 +5,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/timmers/wmonit/internal/config"
 	"github.com/timmers/wmonit/internal/gitlab"
@@ -55,6 +55,7 @@ const (
 	modeFiltering
 	modeDetail
 	modeReport
+	modeForm
 )
 
 const refreshEvery = 5 * time.Minute
@@ -89,7 +90,8 @@ type Model struct {
 	store *tasks.Store
 	hist  *history.Store
 	sess  *session.Store
-	badge string // selo do rodapé (ex.: "🧪 DEMO"); vazio no modo normal
+	badge string
+	open  string
 
 	glSrc gitlabSource
 	jiSrc jiraSource
@@ -102,6 +104,7 @@ type Model struct {
 	alert  alertState
 	detail detailState
 	sui    sessionUI
+	live   liveState
 
 	cursor  int
 	addErr  string
@@ -151,20 +154,22 @@ type detailState struct {
 }
 
 type sessionUI struct {
-	descInput  textarea.Model
-	pending    *pendingSession
-	pick       pickState
-	target     string
-	info       string
-	snap       hub.Snapshot
-	lastStatus map[string]string
-	readySince map[string]time.Time
-	delivering map[string]bool
-	hubAsked   time.Time
-	hubAt      time.Time
-	hubReply   string
-	hubWaiting bool
-	hubPending bool
+	descInput    textarea.Model
+	form         *createForm
+	confirmClean bool
+	pending      *pendingSession
+	pick         pickState
+	target       string
+	info         string
+	snap         hub.Snapshot
+	lastStatus   map[string]string
+	readySince   map[string]time.Time
+	delivering   map[string]bool
+	hubAsked     time.Time
+	hubAt        time.Time
+	hubReply     string
+	hubWaiting   bool
+	hubPending   bool
 }
 
 func New(cfg config.Config, store *tasks.Store, hist *history.Store, sess *session.Store, gl gitlabSource, ji jiraSource, hr hub.Herdr, badge string) Model {
@@ -195,19 +200,20 @@ func New(cfg config.Config, store *tasks.Store, hist *history.Store, sess *sessi
 	return Model{
 		cfg: cfg, store: store, hist: hist, sess: sess, badge: badge,
 		glSrc: gl, jiSrc: ji, hr: hr,
-		input: ti, filterInput: fi, spin: sp, vp: viewport.New(80, 20),
+		input: ti, filterInput: fi, spin: sp, vp: viewport.New(viewport.WithWidth(80), viewport.WithHeight(20)),
 		fetch: fetchState{ctx: ctx, cancel: cancel, loading: 2},
 		alert: alertState{
 			notified:    map[string]bool{},
 			seenTodos:   map[int]bool{},
 			issueStatus: map[string]string{},
 		},
-		sui: sui,
+		sui:  sui,
+		live: newLiveState(),
 	}
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.fetchAll(), m.spin.Tick, tick(), reminderTick(), m.poll(true))
+	return tea.Batch(m.fetchAll(), m.spin.Tick, tick(), reminderTick(), m.poll(true), m.startEvents(), m.watchHubReply())
 }
 
 func tick() tea.Cmd {
@@ -316,16 +322,22 @@ func (m *Model) refresh() tea.Cmd {
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if next, cmd, ok := m.updateLive(msg); ok {
+		return next, cmd
+	}
 	if next, cmd, ok := m.updateWorkspaces(msg); ok {
 		return next, cmd
 	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		m.input.Width = max(20, msg.Width-10)
+		m.input.SetWidth(max(20, msg.Width-10))
 		m.sui.descInput.SetWidth(max(40, msg.Width-12))
-		m.vp.Width = max(36, m.width-8)
-		m.vp.Height = max(5, m.height-5)
+		m.vp.SetWidth(max(36, m.width-8))
+		m.vp.SetHeight(max(5, m.height-5))
+		if m.sui.form != nil {
+			m.sui.form.form.WithWidth(max(40, m.vp.Width()-2))
+		}
 		return m, nil
 
 	case spinner.TickMsg:
@@ -361,7 +373,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.fetch.updated = time.Now()
 		m.recordToday()
-		return m, m.gitlabAlerts()
+		if m.open != "" && m.fetch.loading == 0 && m.mode == modeNormal {
+			next, cmd := m.resolveOpen()
+			return next, tea.Batch(m.gitlabAlerts(), m.fetchMRStatus(), cmd)
+		}
+		return m, tea.Batch(m.gitlabAlerts(), m.fetchMRStatus())
 
 	case jiMsg:
 		if msg.gen != m.fetch.gen {
@@ -371,6 +387,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.fetch.ji, m.fetch.jiErr = msg.sum, msg.err
 		m.fetch.updated = time.Now()
 		m.recordToday()
+		if m.open != "" && m.fetch.loading == 0 && m.mode == modeNormal {
+			next, cmd := m.resolveOpen()
+			return next, tea.Batch(m.jiraAlerts(), cmd)
+		}
 		return m, m.jiraAlerts()
 
 	case descEditedMsg:
@@ -385,8 +405,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		switch m.mode {
+		case modeForm:
+			return m.updateForm(msg)
 		case modeAdding:
 			return m.updateAdding(msg)
 		case modeDescribing:
@@ -403,10 +425,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateKeys(msg)
 		}
 	}
+	if m.mode == modeForm {
+		return m.updateForm(msg)
+	}
 	return m, nil
 }
 
-func (m Model) updateAdding(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) updateAdding(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter":
 		if v := strings.TrimSpace(m.input.Value()); v != "" {
@@ -433,7 +458,7 @@ func (m Model) updateAdding(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m Model) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) updateFilter(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter":
 		m.mode = modeNormal
@@ -454,7 +479,7 @@ func (m Model) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m Model) updateReport(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) updateReport(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "q", "g":
 		m.mode = modeNormal
@@ -472,7 +497,7 @@ func (m Model) updateReport(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m Model) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) updateKeys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "q", "ctrl+c":
 		return m, tea.Quit
@@ -513,7 +538,7 @@ func (m Model) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.cursor--
 			}
 			m.scrollToCursor()
-		case " ", "x":
+		case "space", "x":
 			m.store.ToggleAt(m.cursor)
 			m.save(m.store.Save())
 		case "d":
@@ -586,10 +611,10 @@ func (m Model) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // visível.
 func (m *Model) scrollTo(content string, line int) {
 	m.vp.SetContent(content)
-	if line < m.vp.YOffset {
+	if line < m.vp.YOffset() {
 		m.vp.SetYOffset(line)
-	} else if line >= m.vp.YOffset+m.vp.Height {
-		m.vp.SetYOffset(line - m.vp.Height + 1)
+	} else if line >= m.vp.YOffset()+m.vp.Height() {
+		m.vp.SetYOffset(line - m.vp.Height() + 1)
 	}
 }
 

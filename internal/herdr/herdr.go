@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -25,16 +26,18 @@ const (
 	CodeAgentNotReady    = "agent_not_ready"
 	CodeAgentBlocked     = "agent_blocked"
 	CodePromptStalled    = "agent_prompt_stalled"
+	CodePaneBusy         = "agent_pane_busy"
 )
 
 type Workspace struct {
-	ID          string `json:"workspace_id"`
-	Label       string `json:"label"`
-	Number      int    `json:"number"`
-	AgentStatus string `json:"agent_status"`
-	Focused     bool   `json:"focused"`
-	TabCount    int    `json:"tab_count"`
-	ActiveTabID string `json:"active_tab_id"`
+	ID          string            `json:"workspace_id"`
+	Label       string            `json:"label"`
+	Number      int               `json:"number"`
+	AgentStatus string            `json:"agent_status"`
+	Focused     bool              `json:"focused"`
+	TabCount    int               `json:"tab_count"`
+	ActiveTabID string            `json:"active_tab_id"`
+	Tokens      map[string]string `json:"tokens"`
 }
 
 type Tab struct {
@@ -54,14 +57,37 @@ type Pane struct {
 }
 
 type Agent struct {
-	Name          string `json:"name"`
-	Kind          string `json:"agent"`
-	Status        string `json:"agent_status"`
-	PaneID        string `json:"pane_id"`
-	TabID         string `json:"tab_id"`
-	WorkspaceID   string `json:"workspace_id"`
-	Cwd           string `json:"cwd"`
-	LaunchPending bool   `json:"launch_pending"`
+	Name          string        `json:"name"`
+	Kind          string        `json:"agent"`
+	Status        string        `json:"agent_status"`
+	PaneID        string        `json:"pane_id"`
+	TabID         string        `json:"tab_id"`
+	WorkspaceID   string        `json:"workspace_id"`
+	Cwd           string        `json:"cwd"`
+	LaunchPending bool          `json:"launch_pending"`
+	Session       *AgentSession `json:"agent_session"`
+	Title         string        `json:"terminal_title_stripped"`
+}
+
+type AgentSession struct {
+	Source string `json:"source"`
+	Kind   string `json:"kind"`
+	Value  string `json:"value"`
+}
+
+func (a Agent) SessionID() string {
+	if a.Session == nil || a.Session.Kind != "id" {
+		return ""
+	}
+	return a.Session.Value
+}
+
+type State struct {
+	Workspaces []Workspace `json:"workspaces"`
+	Tabs       []Tab       `json:"tabs"`
+	Panes      []Pane      `json:"panes"`
+	Agents     []Agent     `json:"agents"`
+	Version    string      `json:"version"`
 }
 
 func (a Agent) Ready() bool { return a.Status == StatusIdle || a.Status == StatusDone }
@@ -79,16 +105,17 @@ func IsCode(err error, code string) bool {
 }
 
 type Client struct {
-	Bin     string
-	Session string
-	Timeout time.Duration
+	Bin       string
+	Session   string
+	Timeout   time.Duration
+	ShellWait time.Duration
 }
 
 func New(bin string) *Client {
 	if bin == "" {
 		bin = "herdr"
 	}
-	return &Client{Bin: bin, Timeout: 15 * time.Second}
+	return &Client{Bin: bin, Timeout: 15 * time.Second, ShellWait: 15 * time.Second}
 }
 
 type envelope struct {
@@ -147,6 +174,9 @@ func (c *Client) call(timeout time.Duration, out any, args ...string) error {
 }
 
 func decode(data []byte, out any) error {
+	if len(bytes.TrimSpace(data)) == 0 && out == nil {
+		return nil
+	}
 	var env envelope
 	if err := json.Unmarshal(bytes.TrimSpace(data), &env); err != nil {
 		return fmt.Errorf("herdr: resposta inválida: %w", err)
@@ -190,6 +220,58 @@ func (c *Client) Agents() ([]Agent, error) {
 	}
 	err := c.call(c.Timeout, &r, "agent", "list")
 	return r.Agents, err
+}
+
+func (c *Client) State() (State, error) {
+	var r struct {
+		Snapshot State `json:"snapshot"`
+	}
+	err := c.call(c.Timeout, &r, "api", "snapshot")
+	return r.Snapshot, err
+}
+
+func (c *Client) ReportMetadata(workspaceID, source string, tokens map[string]string) error {
+	args := []string{"workspace", "report-metadata", workspaceID, "--source", source}
+	for _, k := range sortedKeys(tokens) {
+		if v := tokens[k]; v != "" {
+			args = append(args, "--token", k+"="+v)
+		} else {
+			args = append(args, "--clear-token", k)
+		}
+	}
+	return c.call(c.Timeout, nil, args...)
+}
+
+func (c *Client) Notify(title, body, sound string) error {
+	args := []string{"notification", "show", title}
+	if body != "" {
+		args = append(args, "--body", body)
+	}
+	if sound != "" {
+		args = append(args, "--sound", sound)
+	}
+	return c.call(c.Timeout, nil, args...)
+}
+
+func (c *Client) Wait(agent string, timeout time.Duration, until ...string) (Agent, error) {
+	args := []string{"agent", "wait", agent, "--timeout", fmt.Sprint(timeout.Milliseconds())}
+	for _, u := range until {
+		args = append(args, "--until", u)
+	}
+	var r struct {
+		Agent Agent `json:"agent"`
+	}
+	err := c.call(timeout+5*time.Second, &r, args...)
+	return r.Agent, err
+}
+
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func (c *Client) CreateWorkspace(label, cwd string) (Workspace, Tab, Pane, error) {
@@ -236,7 +318,14 @@ func (c *Client) StartAgent(name, kind, paneID string, args ...string) error {
 	if len(args) > 0 {
 		cmd = append(append(cmd, "--"), args...)
 	}
-	return c.call(50*time.Second, nil, cmd...)
+	deadline := time.Now().Add(c.ShellWait)
+	for {
+		err := c.call(50*time.Second, nil, cmd...)
+		if !IsCode(err, CodePaneBusy) || time.Now().After(deadline) {
+			return err
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
 }
 
 func (c *Client) Prompt(agent, text string) error {

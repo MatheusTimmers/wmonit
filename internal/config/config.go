@@ -9,20 +9,25 @@ import (
 	"runtime"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/timmers/wmonit/internal/claude"
 )
 
 type GitLab struct {
-	URL   string `toml:"url"`
-	Token string `toml:"token"`
+	URL     string `toml:"url"`
+	Token   string `toml:"token"`
+	DraftMR bool   `toml:"draft_mr"`
 }
 
 type Jira struct {
-	URL             string   `toml:"url"`
-	Auth            string   `toml:"auth"` // "bearer" (Server/DC com PAT) ou "basic" (Cloud com email+token)
-	Email           string   `toml:"email"`
-	Token           string   `toml:"token"`
-	StatusOrder     []string `toml:"status_order"`
-	ComplexityField string   `toml:"complexity_field"`
+	URL              string   `toml:"url"`
+	Auth             string   `toml:"auth"`
+	Email            string   `toml:"email"`
+	Token            string   `toml:"token"`
+	StatusOrder      []string `toml:"status_order"`
+	ComplexityField  string   `toml:"complexity_field"`
+	StartTransition  string   `toml:"start_transition"`
+	ReviewTransition string   `toml:"review_transition"`
 }
 
 // TODO: mudar para tasks finalizadas e mr abertos
@@ -32,19 +37,33 @@ type Goals struct {
 }
 
 type Claude struct {
-	SourcesDir     string            `toml:"sources_dir"`
-	WorktreesDir   string            `toml:"worktrees_dir"`
-	Bin            string            `toml:"bin"`
-	BranchPrefix   string            `toml:"branch_prefix"`
-	Templates      map[string]string `toml:"templates"` // TODO: Seria legal adicionar um template geral e não por serviço
-	Model          string            `toml:"model"`
-	PermissionMode string            `toml:"permission_mode"`
+	SourcesDir     string                  `toml:"sources_dir"`
+	WorktreesDir   string                  `toml:"worktrees_dir"`
+	Bin            string                  `toml:"bin"`
+	BranchPrefix   string                  `toml:"branch_prefix"`
+	Template       string                  `toml:"template"`
+	Templates      map[string]string       `toml:"templates"`
+	Model          string                  `toml:"model"`
+	Models         []string                `toml:"models"`
+	PermissionMode string                  `toml:"permission_mode"`
+	Prices         map[string]claude.Price `toml:"prices"`
 }
 
 type Herdr struct {
-	Bin    string `toml:"bin"`
-	Editor string `toml:"editor"`
+	Bin      string `toml:"bin"`
+	Session  string `toml:"session"`
+	Editor   string `toml:"editor"`
+	Events   *bool  `toml:"events"`
+	Metadata *bool  `toml:"metadata"`
+	Notify   string `toml:"notify"`
 }
+
+func (h Herdr) EventsOn() bool   { return h.Events == nil || *h.Events }
+func (h Herdr) MetadataOn() bool { return h.Metadata == nil || *h.Metadata }
+func (h Herdr) NotifyDesktop() bool {
+	return h.Notify == "" || h.Notify == "desktop" || h.Notify == "both"
+}
+func (h Herdr) NotifyHerdr() bool { return h.Notify == "herdr" || h.Notify == "both" }
 
 type Editor struct {
 	Bin string `toml:"bin"`
@@ -68,6 +87,9 @@ func defaultSourcesDir() string {
 }
 
 func Path() string {
+	if p := os.Getenv("WMONIT_CONFIG"); p != "" {
+		return p
+	}
 	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
 		return filepath.Join(dir, "wmonit", "config.toml")
 	}
@@ -112,6 +134,9 @@ func Load() (Config, error) {
 	}
 	if cfg.Herdr.Editor == "" {
 		cfg.Herdr.Editor = "nvim ."
+	}
+	if len(cfg.Claude.Models) == 0 {
+		cfg.Claude.Models = []string{"opus", "sonnet", "haiku"}
 	}
 	return cfg, nil
 }

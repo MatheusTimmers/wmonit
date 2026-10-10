@@ -60,6 +60,8 @@ type Item struct {
 	JiraStatus string
 	MR         *gitlab.MR
 	MRReview   bool
+	MRStatus   *gitlab.MRStatus
+	Usage      *claude.Usage
 }
 
 type DigestInput struct {
@@ -71,7 +73,7 @@ type DigestInput struct {
 	Tasks  []tasks.Task
 }
 
-func Collect(h Herdr, snap Snapshot, sessions []session.Session, ji *jira.Summary, gl *gitlab.Summary, screenLines int) []Item {
+func Collect(h Herdr, snap Snapshot, sessions []session.Session, ji *jira.Summary, gl *gitlab.Summary, statuses map[string]*gitlab.MRStatus, screenLines int) []Item {
 	var mrs, review []gitlab.MR
 	if gl != nil {
 		mrs = append(append(mrs, gl.OpenMRs...), gl.ReviewPending...)
@@ -108,6 +110,16 @@ func Collect(h Herdr, snap Snapshot, sessions []session.Session, ji *jira.Summar
 			}
 		}
 		it.MR = FindMR(s, mrs)
+		ref := s.MRRef()
+		if it.MR != nil {
+			ref = it.MR.ShortRef()
+		}
+		it.MRStatus = statuses[ref]
+		if path := claude.TranscriptPath(s.ClaudeSession); path != "" {
+			if u, err := claude.ReadUsage(path); err == nil {
+				it.Usage = &u
+			}
+		}
 		if it.MR != nil {
 			for _, r := range review {
 				if r.ProjectID == it.MR.ProjectID && r.IID == it.MR.IID {
@@ -198,6 +210,16 @@ func Digest(in DigestInput) string {
 		} else if ref := s.MRRef(); ref != "" {
 			fmt.Fprintf(&b, "- MR: %s (não está entre os abertos)\n", ref)
 		}
+		if st := it.MRStatus; st != nil {
+			if p := st.Problems(); len(p) > 0 {
+				fmt.Fprintf(&b, "- Situação do MR: %s\n", strings.Join(p, "; "))
+			} else if st.Ready() {
+				b.WriteString("- Situação do MR: pronto para merge\n")
+			}
+			if st.HeadPipeline != nil && st.HeadPipeline.WebURL != "" {
+				fmt.Fprintf(&b, "- Pipeline: %s (%s)\n", st.HeadPipeline.Status, st.HeadPipeline.WebURL)
+			}
+		}
 		switch {
 		case it.Agent != nil:
 			fmt.Fprintf(&b, "- Claude: agent `%s`, estado %s\n", it.Agent.Name, describeStatus(it.Agent.Status))
@@ -206,6 +228,16 @@ func Digest(in DigestInput) string {
 		}
 		if s.PendingPrompt != "" {
 			b.WriteString("- Há um pedido esperando o Claude ficar livre para ser enviado\n")
+		}
+		if u := it.Usage; u != nil {
+			fmt.Fprintf(&b, "- Conversa do Claude: %d pedido(s), %s tokens, última atividade %s", u.Turns, claude.FormatTokens(u.Tokens()), u.LastAt.Local().Format("02/01 15:04"))
+			if u.LastTool != "" {
+				fmt.Fprintf(&b, ", última ferramenta %s", u.LastTool)
+			}
+			b.WriteString("\n")
+			if t := strings.TrimSpace(u.LastText); t != "" {
+				fmt.Fprintf(&b, "- Última fala do Claude: %s\n", clip(strings.Join(strings.Fields(t), " "), 400))
+			}
 		}
 		if s.Err != "" {
 			fmt.Fprintf(&b, "- Último erro: %s\n", s.Err)

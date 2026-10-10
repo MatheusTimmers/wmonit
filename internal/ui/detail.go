@@ -4,8 +4,8 @@ import (
 	"context"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 // openDetail entra no modo detalhe e dispara o carregamento do item.
@@ -24,7 +24,7 @@ func (m Model) openDetail(it *focusItem) (tea.Model, tea.Cmd) {
 }
 
 // updateDetail trata as teclas enquanto o painel de detalhes está aberto.
-func (m Model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) updateDetail(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "q", "enter":
 		m.mode = modeNormal
@@ -44,7 +44,7 @@ func (m Model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // wrapText quebra o texto na largura do viewport para descrições/comentários
 // longos não saírem da tela.
 func (m Model) wrapText(s string) string {
-	w := m.vp.Width - 2
+	w := m.vp.Width() - 2
 	if w < 20 {
 		w = 20
 	}

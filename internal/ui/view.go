@@ -7,7 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/timmers/wmonit/internal/gitlab"
 	"github.com/timmers/wmonit/internal/jira"
@@ -156,7 +157,14 @@ func fmtNum(p float64) string {
 	return fmt.Sprintf("%.1f", p)
 }
 
-func (m Model) View() string {
+func (m Model) View() tea.View {
+	v := tea.NewView(m.render())
+	v.AltScreen = true
+	v.WindowTitle = m.windowTitle()
+	return v
+}
+
+func (m Model) render() string {
 	var b strings.Builder
 
 	var topRow string
@@ -190,10 +198,10 @@ func (m Model) View() string {
 	return b.String()
 }
 
-// content gera o texto da aba ativa; é usado tanto para desenhar quanto
-// para alimentar o viewport do modelo (sem isso a rolagem não tem altura).
 func (m Model) content() string {
 	switch m.mode {
+	case modeForm:
+		return m.viewForm()
 	case modeDescribing:
 		return m.viewDescribe()
 	case modePicking:
@@ -262,10 +270,12 @@ func (m Model) footer(vp interface{ ScrollPercent() float64 }) string {
 		return dim.Render(" buscar: ") + m.filterInput.View() + dim.Render("  (enter aplica · esc limpa)")
 	}
 	help := "tab/1-6 abas · g relatório do dia · j/k rolar · r atualizar · q sair"
-	if m.mode == modeDescribing {
-		help = "ctrl+d envia/cria · ctrl+n só cria · ctrl+r alterna dev/revisão · ctrl+e editor · esc cancela"
+	if m.mode == modeForm {
+		help = "tab/enter próximo · shift+tab anterior · / filtra a lista · esc cancela"
+	} else if m.mode == modeDescribing {
+		help = "ctrl+d envia · ctrl+e editor · esc cancela"
 	} else if m.mode == modePicking {
-		help = "j/k escolher · pgup/pgdn página · home/end início/fim · enter confirmar · esc cancelar"
+		help = "j/k escolher · / filtrar · pgup/pgdn página · home/end início/fim · enter confirmar · esc cancelar"
 	} else if m.mode == modeDetail {
 		help = "esc/q voltar · o abrir no navegador · j/k rolar"
 	} else if m.mode == modeReport {
@@ -273,7 +283,7 @@ func (m Model) footer(vp interface{ ScrollPercent() float64 }) string {
 	} else if m.tab == tabGitLab || m.tab == tabJira {
 		help = "j/k selecionar · enter detalhes · o navegador · c workspace · / buscar · r atualizar · q sair"
 	} else if m.tab == tabSessoes {
-		help = "n novo · a abrir no herdr · p mensagem · i pendências · enter detalhes · L ligar · u adotar · w reabrir · x esc · v diff · o link · f/F concluir · d/D remover"
+		help = "n novo · a abrir no herdr · p mensagem · i pendências · enter detalhes · s entregar (push+MR) · L ligar · u adotar · w reabrir · x esc · v diff · o link · f/F concluir · C limpar · d/D remover"
 	} else if m.tab == tabTarefas {
 		if m.mode == modeAdding {
 			help = "enter salvar · esc cancelar"

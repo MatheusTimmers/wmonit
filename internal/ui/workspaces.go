@@ -1,26 +1,32 @@
 package ui
 
 import (
+	"context"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textarea"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/textarea"
+	tea "charm.land/bubbletea/v2"
+	"github.com/sahilm/fuzzy"
 
 	"github.com/timmers/wmonit/internal/claude"
+	"github.com/timmers/wmonit/internal/config"
 	"github.com/timmers/wmonit/internal/gitlab"
 	"github.com/timmers/wmonit/internal/herdr"
 	"github.com/timmers/wmonit/internal/hub"
+	"github.com/timmers/wmonit/internal/repocfg"
 	"github.com/timmers/wmonit/internal/session"
 	"github.com/timmers/wmonit/internal/worktree"
 )
 
 const (
 	wsPollEvery   = 3 * time.Second
+	wsPollEvents  = 20 * time.Second
 	wsPollOffline = 10 * time.Second
 	deliverAfter  = 2500 * time.Millisecond
 	screenLines   = 60
@@ -67,17 +73,19 @@ type infoMsg struct {
 type pickPurpose int
 
 const (
-	pickService pickPurpose = iota
-	pickLink
+	pickLink pickPurpose = iota
 )
 
 type pickState struct {
-	purpose pickPurpose
-	title   string
-	labels  []string
-	values  []string
-	cursor  int
-	target  string
+	purpose   pickPurpose
+	title     string
+	labels    []string
+	plain     []string
+	values    []string
+	cursor    int
+	target    string
+	query     string
+	filtering bool
 }
 
 type pendingSession struct {
@@ -85,6 +93,7 @@ type pendingSession struct {
 	createBranch bool
 	guess        string
 	services     []string
+	model        string
 }
 
 type rowKind int
@@ -126,12 +135,9 @@ func (m Model) updateWorkspaces(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 	case wsSnapMsg:
 		cmds := m.applySnapshot(msg.snap)
 		if msg.tick {
-			next := wsPollEvery
-			if !msg.snap.Online() {
-				next = wsPollOffline
-			}
-			cmds = append(cmds, wsTick(next))
+			cmds = append(cmds, wsTick(m.pollInterval(msg.snap)))
 		}
+		cmds = append(cmds, m.publishMeta(), m.refreshUsage())
 		return m, tea.Batch(cmds...), true
 
 	case sessSavedMsg:
@@ -209,6 +215,10 @@ func (m Model) updateWorkspaces(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		}
 		return m, m.pollHerdr(), true
 
+	case shippedMsg:
+		next, cmd := m.updateShip(msg)
+		return next, cmd, true
+
 	case infoMsg:
 		if msg.err != nil {
 			m.sui.info = errStyle.Render(friendlyErr(msg.err))
@@ -260,11 +270,12 @@ func (m *Model) applySnapshot(snap hub.Snapshot) []tea.Cmd {
 		if label == "" {
 			continue
 		}
+		m.live.usageAt = time.Time{}
 		switch {
 		case a.Status == herdr.StatusBlocked:
-			cmds = append(cmds, notifyCmd("wmonit — "+label, "precisa de você (permissão ou pergunta)"))
+			cmds = append(cmds, m.notify("wmonit — "+label, "precisa de você (permissão ou pergunta)", "request"))
 		case old == herdr.StatusWorking && a.Status == herdr.StatusDone:
-			cmds = append(cmds, notifyCmd("wmonit — "+label, "o Claude terminou"))
+			cmds = append(cmds, m.notify("wmonit — "+label, "o Claude terminou", "done"))
 		}
 	}
 	m.sui.lastStatus = statuses
@@ -302,16 +313,8 @@ func (m *Model) applySnapshot(snap hub.Snapshot) []tea.Cmd {
 			cmds = append(cmds, m.hubKickoffCmd())
 		}
 	}
-	if m.sui.hubWaiting {
-		if text, at, ok := hub.ReadReply(m.hubDir(), m.sui.hubAsked); ok {
-			m.sui.hubWaiting = false
-			m.sui.hubReply, m.sui.hubAt = text, at
-			cmds = append(cmds, notifyCmd("wmonit — pendências", "a análise está pronta"))
-			if m.mode == modeDetail && m.detail.hub {
-				m.detail.loading = false
-				m.detail.body = m.hubBody()
-			}
-		}
+	if cmd := m.checkHubReply(); cmd != nil {
+		cmds = append(cmds, cmd)
 	}
 	return cmds
 }
@@ -451,25 +454,7 @@ func (m Model) pickServiceFor(p *pendingSession) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	p.services = services
-	cursor := 0
-	for i, s := range services {
-		if strings.EqualFold(s, p.guess) {
-			cursor = i
-		}
-	}
-	title := "🛠 Em qual repositório criar o workspace?"
-	if p.sess.Key != "" {
-		title = "🛠 Em qual repositório trabalhar " + p.sess.Key + "?"
-	}
-	m.sui.pending = p
-	m.sui.pick = pickState{purpose: pickService, title: title, labels: services, values: services, cursor: cursor}
-	m.tab = tabSessoes
-	m.filter = ""
-	m.sui.info = ""
-	m.mode = modePicking
-	m.vp.GotoTop()
-	m.scrollToPick()
-	return m, nil
+	return m.openCreateForm(p)
 }
 
 func (m Model) describe() (tea.Model, tea.Cmd) {
@@ -480,30 +465,16 @@ func (m Model) describe() (tea.Model, tea.Cmd) {
 	return m, textarea.Blink
 }
 
-func (m Model) updateDescribe(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) updateDescribe(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.mode = modeNormal
-		m.sui.pending = nil
 		m.sui.target = ""
 		m.sui.descInput.Blur()
 		m.sui.info = dim.Render("cancelado")
 		return m, nil
 	case "ctrl+d", "ctrl+s":
-		return m.submitText(true)
-	case "ctrl+n":
-		if m.sui.pending != nil {
-			return m.submitText(false)
-		}
-	case "ctrl+r":
-		if p := m.sui.pending; p != nil && p.sess.Kind == session.KindMR {
-			if p.sess.IsReview() {
-				p.sess.Mode = session.ModeImplement
-			} else {
-				p.sess.Mode = session.ModeReview
-			}
-		}
-		return m, nil
+		return m.submitText()
 	case "ctrl+e":
 		return m, editNoteCmd(m.cfg, m.sui.descInput.Value())
 	}
@@ -512,15 +483,10 @@ func (m Model) updateDescribe(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m Model) submitText(send bool) (tea.Model, tea.Cmd) {
+func (m Model) submitText() (tea.Model, tea.Cmd) {
 	text := strings.TrimSpace(m.sui.descInput.Value())
 	m.mode = modeNormal
 	m.sui.descInput.Blur()
-	if p := m.sui.pending; p != nil {
-		m.sui.pending = nil
-		p.sess.UserNote = text
-		return m.launchCreate(*p, send)
-	}
 	target := m.sui.target
 	m.sui.target = ""
 	if text == "" {
@@ -532,70 +498,83 @@ func (m Model) submitText(send bool) (tea.Model, tea.Cmd) {
 
 func (m Model) viewDescribe() string {
 	var b strings.Builder
-	if m.sui.pending == nil {
-		b.WriteString(section.Render("💬 Mensagem para "+m.targetName(m.sui.target)) + "\n\n")
-		b.WriteString(dim.Render("O texto vai direto para o Claude do workspace, como se você tivesse digitado lá.") + "\n\n")
-		b.WriteString(m.sui.descInput.View() + "\n\n")
-		b.WriteString(dim.Render("ctrl+d envia · ctrl+e edita no editor · esc cancela"))
-		return b.String()
-	}
-	p := m.sui.pending
-	if p.sess.Kind == session.KindFree {
-		b.WriteString(section.Render("🆕 Novo workspace em "+p.sess.Service) + "\n\n")
-		b.WriteString(dim.Render("Descreva o que fazer. A primeira linha vira o título; vazio = só abre o workspace.") + "\n\n")
-	} else {
-		head, mode := "📝 Novo workspace — ", okStyle.Render("desenvolvimento")
-		expl := "Explique a tarefa; a descrição e os comentários da issue/MR entram junto no contexto (" + claude.TaskFile + ")."
-		if p.sess.IsReview() {
-			head, mode = "🔎 Nova revisão — ", warnStyle.Render("revisão (só revisa o MR e reporta)")
-			expl = "Diga o que olhar com atenção na revisão (opcional); a descrição e os comentários do MR entram no contexto."
-		}
-		b.WriteString(section.Render(head+p.sess.Key) + " " + p.sess.Title + "\n\n")
-		b.WriteString(dim.Render("repositório: ") + p.sess.Service + dim.Render(" · modo: ") + mode)
-		if p.sess.Kind == session.KindMR {
-			b.WriteString(dim.Render("  (ctrl+r troca)"))
-		}
-		b.WriteString("\n" + dim.Render(expl) + "\n\n")
-	}
+	b.WriteString(section.Render("💬 Mensagem para "+m.targetName(m.sui.target)) + "\n\n")
+	b.WriteString(dim.Render("O texto vai direto para o Claude do workspace, como se você tivesse digitado lá.") + "\n\n")
 	b.WriteString(m.sui.descInput.View() + "\n\n")
-	b.WriteString(dim.Render("ctrl+d cria e manda a tarefa ao Claude · ctrl+n só cria · ctrl+e edita no editor · esc cancela"))
+	b.WriteString(dim.Render("ctrl+d envia · ctrl+e edita no editor · esc cancela"))
 	return b.String()
 }
 
-func (m Model) updatePick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (pk pickState) visible() []int {
+	if pk.query == "" {
+		idx := make([]int, len(pk.values))
+		for i := range idx {
+			idx[i] = i
+		}
+		return idx
+	}
+	var idx []int
+	for _, mt := range fuzzy.Find(pk.query, pk.plain) {
+		idx = append(idx, mt.Index)
+	}
+	return idx
+}
+
+func (m Model) updatePick(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	pk := &m.sui.pick
+	if pk.filtering {
+		switch msg.String() {
+		case "esc":
+			pk.filtering, pk.query, pk.cursor = false, "", 0
+		case "enter":
+			pk.filtering = false
+		case "backspace":
+			if r := []rune(pk.query); len(r) > 0 {
+				pk.query = string(r[:len(r)-1])
+			}
+			pk.cursor = 0
+		case "down", "ctrl+j", "ctrl+n":
+			return m.movePick(1)
+		case "up", "ctrl+k", "ctrl+p":
+			return m.movePick(-1)
+		default:
+			if msg.Text != "" {
+				pk.query += msg.Text
+				pk.cursor = 0
+			}
+		}
+		m.scrollToPick()
+		return m, nil
+	}
+	n := len(pk.visible())
 	switch msg.String() {
 	case "esc", "q":
 		m.mode = modeNormal
-		m.sui.pending = nil
+		return m, nil
+	case "/":
+		pk.filtering = true
 		return m, nil
 	case "j", "down":
 		return m.movePick(1)
 	case "k", "up":
 		return m.movePick(-1)
 	case "pgdown", "ctrl+d":
-		return m.movePick(max(1, m.vp.Height-pickHeader))
+		return m.movePick(max(1, m.vp.Height()-pickHeader))
 	case "pgup", "ctrl+u":
-		return m.movePick(-max(1, m.vp.Height-pickHeader))
+		return m.movePick(-max(1, m.vp.Height()-pickHeader))
 	case "home", "g":
-		return m.movePick(-len(pk.values))
+		return m.movePick(-n)
 	case "end", "G":
-		return m.movePick(len(pk.values))
+		return m.movePick(n)
 	case "enter":
-		if len(pk.values) == 0 {
+		vis := pk.visible()
+		if len(vis) == 0 {
 			m.mode = modeNormal
 			return m, nil
 		}
-		value := pk.values[pk.cursor]
+		value := pk.values[vis[min(pk.cursor, len(vis)-1)]]
 		m.mode = modeNormal
-		switch pk.purpose {
-		case pickService:
-			if m.sui.pending == nil {
-				return m, nil
-			}
-			m.sui.pending.sess.Service = value
-			return m.describe()
-		case pickLink:
+		if pk.purpose == pickLink {
 			return m.applyLink(pk.target, value)
 		}
 	}
@@ -606,7 +585,7 @@ const pickHeader = 2
 
 func (m Model) movePick(delta int) (tea.Model, tea.Cmd) {
 	pk := &m.sui.pick
-	pk.cursor = min(max(pk.cursor+delta, 0), max(len(pk.values)-1, 0))
+	pk.cursor = min(max(pk.cursor+delta, 0), max(len(pk.visible())-1, 0))
 	m.scrollToPick()
 	return m, nil
 }
@@ -622,16 +601,24 @@ func (m *Model) scrollToPick() {
 func (m Model) viewPick() string {
 	var b strings.Builder
 	pk := m.sui.pick
-	b.WriteString(section.Render(pk.title) + "\n\n")
-	if len(pk.labels) == 0 {
-		b.WriteString(dim.Render("(nada para escolher — atualize com r)") + "\n")
+	head := section.Render(pk.title)
+	switch {
+	case pk.filtering:
+		head += "  " + okStyle.Render("/"+pk.query+"▏")
+	case pk.query != "":
+		head += "  " + dim.Render("filtro: "+pk.query)
 	}
-	for i, l := range pk.labels {
+	b.WriteString(head + "\n\n")
+	vis := pk.visible()
+	if len(vis) == 0 {
+		b.WriteString(dim.Render("(nada para escolher — atualize com r ou mude o filtro)") + "\n")
+	}
+	for i, idx := range vis {
 		cursor := "  "
 		if i == pk.cursor {
 			cursor = cursorStyle.Render("▌ ")
 		}
-		b.WriteString(cursor + l + "\n")
+		b.WriteString(cursor + pk.labels[idx] + "\n")
 	}
 	return b.String()
 }
@@ -641,6 +628,7 @@ func (m Model) launchCreate(p pendingSession, send bool) (tea.Model, tea.Cmd) {
 	sess.Repo = filepath.Join(m.cfg.Claude.SourcesDir, sess.Service)
 	sess.Status = session.StatusActive
 	sess.Created = time.Now()
+	sess.Model = p.model
 	base := sess.Key
 	if sess.Kind == session.KindFree {
 		base = sess.Service
@@ -661,9 +649,9 @@ func (m Model) launchCreate(p pendingSession, send bool) (tea.Model, tea.Cmd) {
 	})
 
 	h, gl, ji := m.hr, m.glSrc, m.jiSrc
-	template := m.cfg.Claude.Templates[sess.Service]
+	mover, _ := m.jiSrc.(hub.IssueMover)
+	cfg := m.cfg
 	mrs := m.allMRs()
-	opts := hub.OpenOpts{ClaudeArgs: m.claudeArgs(), Editor: m.cfg.Herdr.Editor}
 	createBranch := p.createBranch
 	m.sui.info = dim.Render("criando o workspace " + sess.Label + " em " + sess.Service + "…")
 	return m, func() tea.Msg {
@@ -671,20 +659,25 @@ func (m Model) launchCreate(p pendingSession, send bool) (tea.Model, tea.Cmd) {
 		if !snap.Online() {
 			return sessSavedMsg{err: fmt.Errorf("%s", friendlyErr(snap.Err))}
 		}
+		rc, rcErr := repocfg.Load(sess.Repo)
 		if sess.OwnsWorktree() {
 			if err := worktree.Add(sess.Repo, sess.Worktree, sess.Branch, createBranch); err != nil {
 				return sessSavedMsg{err: err}
 			}
 		}
+		opts := openOpts(cfg, rc, sess)
 		if sess.Kind == session.KindFree {
 			if sess.UserNote != "" {
 				opts.TaskText = claude.FreePrompt(sess.Service, sess.UserNote)
+				if t := templateFor(cfg, rc, sess.Service); t != "" {
+					opts.TaskText += "\n\nInstruções específicas deste serviço:\n" + t + "\n"
+				}
 				if send {
 					opts.Kickoff = claude.Kickoff()
 				}
 			}
 		} else {
-			ctx := hub.BuildContext(gl, ji, template, sess, mrs)
+			ctx := hub.BuildContext(gl, ji, templateFor(cfg, rc, sess.Service), sess, mrs)
 			opts.TaskText = claude.ContextOnly(ctx)
 			if send {
 				opts.TaskText = hub.TaskText(ctx, sess)
@@ -695,12 +688,59 @@ func (m Model) launchCreate(p pendingSession, send bool) (tea.Model, tea.Cmd) {
 		if err != nil {
 			opened.Err = err.Error()
 		}
+		var notes []string
+		if rcErr != nil {
+			notes = append(notes, rcErr.Error())
+		}
+		if key := opened.IssueKey(); key != "" && opened.Kind == session.KindIssue && cfg.Jira.StartTransition != "" && mover != nil {
+			if to, err := mover.TransitionTo(context.Background(), key, cfg.Jira.StartTransition); err != nil {
+				notes = append(notes, err.Error())
+			} else {
+				notes = append(notes, key+" → "+to)
+			}
+		}
 		info := okStyle.Render("workspace " + opened.Label + " criado — a abre no herdr")
 		if opened.PendingPrompt != "" {
 			info = warnStyle.Render("workspace " + opened.Label + " criado — confirme a pasta no Claude (a); a tarefa vai assim que ele ficar livre")
 		}
+		if len(notes) > 0 {
+			info += dim.Render(" · " + strings.Join(notes, " · "))
+		}
 		return sessSavedMsg{sess: opened, info: info}
 	}
+}
+
+func templateFor(cfg config.Config, rc repocfg.Config, service string) string {
+	var parts []string
+	for _, t := range []string{cfg.Claude.Template, cfg.Claude.Templates[service], rc.Template} {
+		if t = strings.TrimSpace(t); t != "" {
+			parts = append(parts, t)
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+func openOpts(cfg config.Config, rc repocfg.Config, s session.Session) hub.OpenOpts {
+	model := s.Model
+	if model == "" {
+		model = rc.Model
+	}
+	if model == "" {
+		model = cfg.Claude.Model
+	}
+	perm := rc.PermissionMode
+	if perm == "" {
+		perm = cfg.Claude.PermissionMode
+	}
+	editor := cfg.Herdr.Editor
+	if rc.Editor != "" {
+		editor = rc.Editor
+	}
+	o := hub.OpenOpts{ClaudeArgs: hub.ClaudeArgs(model, perm), Editor: editor, Setup: rc.Setup}
+	for _, t := range rc.Tabs {
+		o.Tabs = append(o.Tabs, hub.ExtraTab{Label: t.Label, Command: t.Command})
+	}
+	return o
 }
 
 func firstLine(s string) string {
@@ -713,8 +753,12 @@ func firstLine(s string) string {
 
 func (m Model) reopenCmd(s session.Session) tea.Cmd {
 	h := m.hr
-	opts := hub.OpenOpts{ClaudeArgs: m.claudeArgs(), Editor: m.cfg.Herdr.Editor, Kickoff: s.PendingPrompt}
+	cfg := m.cfg
 	return func() tea.Msg {
+		rc, _ := repocfg.Load(s.Repo)
+		opts := openOpts(cfg, rc, s)
+		opts.Setup = nil
+		opts.Kickoff = s.PendingPrompt
 		dir := s.Worktree
 		if dir == "" {
 			dir = s.Repo
@@ -778,10 +822,11 @@ func (m Model) adoptCmd(w herdr.Workspace) tea.Cmd {
 }
 
 func (m Model) openLinkPicker(s session.Session) (tea.Model, tea.Cmd) {
-	var labels, values []string
+	var labels, plain, values []string
 	if m.fetch.ji != nil {
 		for _, is := range m.fetch.ji.Open {
 			labels = append(labels, warnStyle.Render(is.Key)+" "+truncate(is.Summary, 70)+dim.Render(" · "+is.Status))
+			plain = append(plain, is.Key+" "+is.Summary+" "+is.Status)
 			values = append(values, "issue:"+is.Key)
 		}
 	}
@@ -793,9 +838,10 @@ func (m Model) openLinkPicker(s session.Session) (tea.Model, tea.Cmd) {
 		}
 		seen[ref] = true
 		labels = append(labels, okStyle.Render(ref)+" "+truncate(mr.ShortTitle(), 70))
+		plain = append(plain, ref+" "+mr.Title)
 		values = append(values, "mr:"+ref)
 	}
-	m.sui.pick = pickState{purpose: pickLink, title: "🔗 Ligar " + s.Name() + " a uma issue ou MR", labels: labels, values: values, target: s.ID}
+	m.sui.pick = pickState{purpose: pickLink, title: "🔗 Ligar " + s.Name() + " a uma issue ou MR", labels: labels, plain: plain, values: values, target: s.ID}
 	m.mode = modePicking
 	m.vp.GotoTop()
 	return m, nil
@@ -854,6 +900,7 @@ func (m Model) targetName(target string) string {
 
 func (m Model) sendPromptCmd(target, text string) tea.Cmd {
 	h := m.hr
+	cfg := m.cfg
 	args := m.claudeArgs()
 	hubDir := m.hubDir()
 	sess, isSession := m.sess.Get(target)
@@ -880,7 +927,8 @@ func (m Model) sendPromptCmd(target, text string) tea.Cmd {
 			}
 			agent = a.Name
 		case isSession:
-			name, started, err := hub.EnsureAgent(h, snap, sess, args)
+			rc, _ := repocfg.Load(sess.Repo)
+			name, started, err := hub.EnsureAgent(h, snap, &sess, openOpts(cfg, rc, sess).ClaudeArgs)
 			if err != nil {
 				return infoMsg{err: err}
 			}
@@ -968,6 +1016,7 @@ func (m Model) askHub() (tea.Model, tea.Cmd) {
 	sessions := append([]session.Session{}, m.sess.Sessions...)
 	ji, gl := m.fetch.ji, m.fetch.gl
 	tasksCopy := append(m.store.Tasks[:0:0], m.store.Tasks...)
+	statuses := maps.Clone(m.live.mrStatus)
 	m.sui.hubWaiting = true
 	m.sui.info = dim.Render("montando o resumo de pendências…")
 	m.mode = modeDetail
@@ -980,7 +1029,7 @@ func (m Model) askHub() (tea.Model, tea.Cmd) {
 		}
 		digest := hub.Digest(hub.DigestInput{
 			Now:    time.Now(),
-			Items:  hub.Collect(h, snap, sessions, ji, gl, screenLines),
+			Items:  hub.Collect(h, snap, sessions, ji, gl, statuses, screenLines),
 			Others: hub.Others(snap, sessions),
 			Jira:   ji,
 			GitLab: gl,
@@ -1031,7 +1080,7 @@ func (m Model) hubBody() string {
 	if m.sui.hubWaiting {
 		head += warnStyle.Render(" · atualizando…")
 	}
-	return head + "\n\n" + renderMarkdown(m.sui.hubReply, max(40, m.vp.Width-2))
+	return head + "\n\n" + renderMarkdown(m.sui.hubReply, max(40, m.vp.Width()-2))
 }
 
 func (m Model) openRowDetail(r wsRow) (tea.Model, tea.Cmd) {
@@ -1063,6 +1112,9 @@ func (m Model) openRowDetail(r wsRow) (tea.Model, tea.Cmd) {
 	m.detail.url = s.URL
 	links := m.linksText(s)
 	state := m.stateLabel(r)
+	_, ref := m.sessionMR(s)
+	st := m.live.mrStatus[ref]
+	usage := m.usageText
 	return m, func() tea.Msg {
 		var b strings.Builder
 		b.WriteString(state + "  " + warnStyle.Render(s.Name()) + " " + s.Title + "\n")
@@ -1102,6 +1154,38 @@ func (m Model) openRowDetail(r wsRow) (tea.Model, tea.Cmd) {
 		}
 		if n := strings.TrimSpace(s.UserNote); n != "" {
 			b.WriteString(section.Render("📝 Sua explicação") + "\n" + wrap(n) + "\n\n")
+		}
+		if st != nil {
+			b.WriteString(section.Render("🔀 MR "+ref) + "\n")
+			if p := st.Problems(); len(p) > 0 {
+				for _, x := range p {
+					b.WriteString("  • " + x + "\n")
+				}
+			} else if st.Ready() {
+				b.WriteString("  " + okStyle.Render("pronto para merge") + "\n")
+			}
+			if st.HeadPipeline != nil && st.HeadPipeline.WebURL != "" {
+				b.WriteString(dim.Render("  pipeline "+st.HeadPipeline.Status+": "+st.HeadPipeline.WebURL) + "\n")
+			}
+			b.WriteString("\n")
+		}
+		if path := claude.TranscriptPath(s.ClaudeSession); path != "" {
+			if u, err := claude.ReadUsage(path); err == nil {
+				b.WriteString(section.Render("💬 Conversa do Claude") + "  " + dim.Render(usage(u)) + "\n")
+				if u.Title != "" {
+					b.WriteString("  " + u.Title + "\n")
+				}
+				if u.Model != "" {
+					b.WriteString(dim.Render("  modelo "+u.Model) + "\n")
+				}
+				if u.LastTool != "" {
+					b.WriteString(dim.Render("  última ferramenta "+u.LastTool) + "\n")
+				}
+				if t := strings.TrimSpace(u.LastText); t != "" {
+					b.WriteString(wrap(truncate(t, 600)) + "\n")
+				}
+				b.WriteString(dim.Render("  "+s.ClaudeSession) + "\n\n")
+			}
 		}
 		if hasAgent {
 			if screen, err := h.Read(agent.Name, screenLines); err == nil {
@@ -1165,10 +1249,15 @@ func (m Model) finishCmd(s session.Session, force, remove bool) tea.Cmd {
 	}
 }
 
-func (m Model) sessionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) sessionKeys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	rows := m.wsRows()
 	r := m.selectedRow()
+	if msg.String() != "C" {
+		m.sui.confirmClean = false
+	}
 	switch msg.String() {
+	case "C":
+		return m.cleanStale()
 	case "j", "down":
 		if m.cursor < len(rows)-1 {
 			m.cursor++
@@ -1235,6 +1324,11 @@ func (m Model) sessionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "v":
 		if r.kind == rowSession && r.sess.Active() {
 			return m.openDiff(r.sess)
+		}
+	case "s":
+		if r.kind == rowSession && r.sess.Active() {
+			m.sui.info = dim.Render("entregando " + r.sess.Name() + " (push, MR, Jira)…")
+			return m, m.shipCmd(r.sess)
 		}
 	case "f", "F":
 		if r.kind == rowSession && r.sess.Active() {
@@ -1355,6 +1449,9 @@ func (m Model) viewSessoes() (string, int) {
 	if m.sui.info != "" {
 		write(m.sui.info + "\n\n")
 	}
+	if stale := m.staleItems(); len(stale) > 0 && !m.sui.confirmClean {
+		write(warnStyle.Render(fmt.Sprintf("🧹 %d workspace(s) com MR mergeado ou issue resolvida — C conclui", len(stale))) + "\n\n")
+	}
 	rows := m.wsRows()
 	lastHead := ""
 	for i, r := range rows {
@@ -1412,6 +1509,11 @@ func (m Model) viewSessoes() (string, int) {
 				lineMeta += dim.Render(" · ") + links
 			}
 			write(lineMeta + "\n")
+			if s.Active() {
+				if extra := m.sessionExtra(s); extra != "" {
+					write("    " + extra + "\n")
+				}
+			}
 			if s.PendingPrompt != "" && s.Active() {
 				write("    " + warnStyle.Render("⏳ tarefa esperando o Claude ficar livre (confirme a pasta com a)") + "\n")
 			}
@@ -1423,6 +1525,38 @@ func (m Model) viewSessoes() (string, int) {
 	return b.String(), sel
 }
 
+func (m Model) sessionExtra(s session.Session) string {
+	var parts []string
+	_, ref := m.sessionMR(s)
+	if st := m.live.mrStatus[ref]; st != nil {
+		switch p := st.Problems(); {
+		case len(p) > 0:
+			style := warnStyle
+			if st.CI() == "failed" || st.HasConflicts {
+				style = errStyle
+			}
+			parts = append(parts, style.Render("🔀 "+strings.Join(p, " · ")))
+		case st.Ready():
+			parts = append(parts, okStyle.Render("🔀 pronto para merge"))
+		}
+	}
+	if u, ok := m.live.usage[s.ID]; ok {
+		parts = append(parts, dim.Render("💬 "+m.usageText(u.usage)))
+	}
+	return strings.Join(parts, dim.Render(" · "))
+}
+
+func (m Model) usageText(u claude.Usage) string {
+	text := fmt.Sprintf("%d pedido(s) · %s tokens", u.Turns, claude.FormatTokens(u.Tokens()))
+	if cost, ok := u.Cost(m.cfg.Claude.Prices); ok {
+		text += fmt.Sprintf(" · US$ %.2f", cost)
+	}
+	if !u.LastAt.IsZero() {
+		text += " · " + u.LastAt.Local().Format("02/01 15:04")
+	}
+	return text
+}
+
 func truncate(s string, n int) string {
 	s = strings.Join(strings.Fields(s), " ")
 	r := []rune(s)
@@ -1430,4 +1564,17 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return string(r[:n]) + "…"
+}
+
+func (m Model) windowTitle() string {
+	blocked := 0
+	for _, a := range m.sui.snap.Agents {
+		if a.Status == herdr.StatusBlocked && m.agentOwner(a) != "" {
+			blocked++
+		}
+	}
+	if blocked > 0 {
+		return fmt.Sprintf("wmonit · %d precisa(m) de você", blocked)
+	}
+	return "wmonit"
 }

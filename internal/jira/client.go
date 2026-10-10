@@ -70,11 +70,7 @@ func (c *Client) get(ctx context.Context, path string, q url.Values, out any) (i
 	if err != nil {
 		return 0, err
 	}
-	if c.auth == "basic" {
-		req.SetBasicAuth(c.email, c.token)
-	} else {
-		req.Header.Set("Authorization", "Bearer "+c.token)
-	}
+	c.authorize(req)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return 0, err

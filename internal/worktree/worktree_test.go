@@ -231,3 +231,9 @@ func TestInspect(t *testing.T) {
 		t.Errorf("dirty = %v", info.Dirty)
 	}
 }
+
+func TestInspectNeedsPath(t *testing.T) {
+	if _, err := Inspect(""); err == nil {
+		t.Fatal("Inspect sem pasta não deveria olhar o diretório atual")
+	}
+}

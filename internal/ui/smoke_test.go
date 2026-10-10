@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/timmers/wmonit/internal/config"
 	"github.com/timmers/wmonit/internal/demo"
@@ -30,7 +30,7 @@ func TestSmokeRenderAllTabs(t *testing.T) {
 
 	for tb := tabHoje; tb < numTabs; tb++ {
 		m.tab = tb
-		out := m.View()
+		out := m.render()
 		if strings.TrimSpace(out) == "" {
 			t.Fatalf("aba %d: View vazio", tb)
 		}

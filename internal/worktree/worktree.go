@@ -197,6 +197,9 @@ func Remove(repo, path string, force bool) error {
 // mais os arquivos novos ainda fora do git. Sem base conhecida, cai no diff
 // contra o HEAD (só o que não foi commitado).
 func Diff(path string) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("sem pasta")
+	}
 	from := "HEAD"
 	base := baseBranch(path)
 	if base != "" {
@@ -267,6 +270,9 @@ type Info struct {
 }
 
 func Inspect(path string) (Info, error) {
+	if path == "" {
+		return Info{}, fmt.Errorf("sem pasta")
+	}
 	branch, err := git(path, "branch", "--show-current")
 	if err != nil {
 		return Info{}, err
@@ -291,4 +297,19 @@ func nonEmptyLines(s string) []string {
 		}
 	}
 	return out
+}
+
+func Push(path, branch string) error {
+	_, err := git(path, "push", "-u", "origin", branch)
+	return err
+}
+
+func RemoteURL(path string) (string, error) {
+	out, err := git(path, "config", "--get", "remote.origin.url")
+	return strings.TrimSpace(out), err
+}
+
+func BranchExists(repo, branch string) bool {
+	_, err := git(repo, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch)
+	return err == nil
 }

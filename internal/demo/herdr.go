@@ -2,6 +2,7 @@ package demo
 
 import (
 	"fmt"
+	"maps"
 	"strings"
 	"sync"
 
@@ -33,17 +34,40 @@ func NewHerdr() *Herdr {
 	}
 }
 
-func (h *Herdr) Workspaces() ([]herdr.Workspace, error) {
+func (h *Herdr) State() (herdr.State, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return append([]herdr.Workspace{}, h.workspaces...), nil
+	ws := make([]herdr.Workspace, len(h.workspaces))
+	for i, w := range h.workspaces {
+		w.Tokens = maps.Clone(w.Tokens)
+		ws[i] = w
+	}
+	return herdr.State{Workspaces: ws, Agents: append([]herdr.Agent{}, h.agents...), Version: "demo"}, nil
 }
 
-func (h *Herdr) Agents() ([]herdr.Agent, error) {
+func (h *Herdr) ReportMetadata(workspaceID, _ string, tokens map[string]string) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return append([]herdr.Agent{}, h.agents...), nil
+	for i := range h.workspaces {
+		if h.workspaces[i].ID != workspaceID {
+			continue
+		}
+		if h.workspaces[i].Tokens == nil {
+			h.workspaces[i].Tokens = map[string]string{}
+		}
+		for k, v := range tokens {
+			if v == "" {
+				delete(h.workspaces[i].Tokens, k)
+			} else {
+				h.workspaces[i].Tokens[k] = v
+			}
+		}
+		return nil
+	}
+	return &herdr.Error{Code: "workspace_not_found", Message: "workspace " + workspaceID + " not found"}
 }
+
+func (h *Herdr) Notify(string, string, string) error { return nil }
 
 func (h *Herdr) Panes(workspaceID string) ([]herdr.Pane, error) {
 	h.mu.Lock()

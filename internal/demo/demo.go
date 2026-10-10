@@ -189,6 +189,12 @@ func demoSessions() []session.Session {
 			Kind: session.KindIssue, Mode: session.ModeImplement, Label: "rot-512", Workspace: "w1", Agent: "rot-512",
 			Status: session.StatusActive, Created: hoursAgo(1),
 		},
+		{
+			ID: "ROT-498-demo", Key: "ROT-498", Title: "ajusta timeout do roteador",
+			Issue: "ROT-498", MR: "hades!9460", Service: "hades", Branch: "fix/ROT-498",
+			Kind: session.KindIssue, Mode: session.ModeImplement, Label: "rot-498",
+			Status: session.StatusActive, Created: daysAgo(2),
+		},
 	}
 }
 

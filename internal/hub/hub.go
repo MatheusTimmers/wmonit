@@ -14,8 +14,9 @@ import (
 )
 
 type Herdr interface {
-	Workspaces() ([]herdr.Workspace, error)
-	Agents() ([]herdr.Agent, error)
+	State() (herdr.State, error)
+	ReportMetadata(workspaceID, source string, tokens map[string]string) error
+	Notify(title, body, sound string) error
 	Panes(workspaceID string) ([]herdr.Pane, error)
 	Tabs(workspaceID string) ([]herdr.Tab, error)
 	CreateWorkspace(label, cwd string) (herdr.Workspace, herdr.Tab, herdr.Pane, error)
@@ -44,13 +45,8 @@ type Snapshot struct {
 }
 
 func Poll(h Herdr) Snapshot {
-	snap := Snapshot{At: time.Now()}
-	snap.Workspaces, snap.Err = h.Workspaces()
-	if snap.Err != nil {
-		return snap
-	}
-	snap.Agents, snap.Err = h.Agents()
-	return snap
+	st, err := h.State()
+	return Snapshot{Workspaces: st.Workspaces, Agents: st.Agents, Err: err, At: time.Now()}
 }
 
 func (s Snapshot) Online() bool { return s.Err == nil && !s.At.IsZero() }
@@ -127,10 +123,18 @@ func Reconcile(sess *session.Session, snap Snapshot) bool {
 	sess.Workspace = ws.ID
 	if a, ok := snap.AgentIn(ws.ID); ok {
 		sess.Agent = a.Name
+		if id := a.SessionID(); id != "" {
+			sess.ClaudeSession = id
+		}
 	} else {
 		sess.Agent = ""
 	}
 	return before != *sess
+}
+
+type ExtraTab struct {
+	Label   string
+	Command string
 }
 
 type OpenOpts struct {
@@ -138,6 +142,8 @@ type OpenOpts struct {
 	Editor     string
 	TaskText   string
 	Kickoff    string
+	Setup      []string
+	Tabs       []ExtraTab
 }
 
 func Open(h Herdr, snap Snapshot, sess session.Session, o OpenOpts) (session.Session, error) {
@@ -158,12 +164,17 @@ func Open(h Herdr, snap Snapshot, sess session.Session, o OpenOpts) (session.Ses
 		}
 		_ = worktree.ExcludeFiles(dir, claude.TaskFile)
 	}
-	ws, term, _, err := h.CreateWorkspace(sess.Label, dir)
+	ws, term, termPane, err := h.CreateWorkspace(sess.Label, dir)
 	if err != nil {
 		return sess, err
 	}
 	sess.Workspace = ws.ID
 	_ = h.RenameTab(term.ID, TabTerminal)
+	for _, c := range o.Setup {
+		if c = strings.TrimSpace(c); c != "" {
+			_ = h.Run(termPane.ID, c)
+		}
+	}
 
 	_, claudePane, err := h.CreateTab(ws.ID, dir, TabClaude)
 	if err != nil {
@@ -174,17 +185,26 @@ func Open(h Herdr, snap Snapshot, sess session.Session, o OpenOpts) (session.Ses
 			_ = h.Run(editorPane.ID, editor)
 		}
 	}
+	for _, t := range o.Tabs {
+		if t.Label == "" {
+			continue
+		}
+		if _, pane, err := h.CreateTab(ws.ID, dir, t.Label); err == nil && strings.TrimSpace(t.Command) != "" {
+			_ = h.Run(pane.ID, t.Command)
+		}
+	}
 
 	name := herdr.UniqueName(herdr.AgentName(sess.Label), snap.nameTaken)
 	sess.Agent = name
 	sess.PendingPrompt = o.Kickoff
-	if err := h.StartAgent(name, "claude", claudePane.ID, o.ClaudeArgs...); err != nil && !herdr.IsCode(err, herdr.CodeAgentNotReady) {
+	args := append(append([]string{}, o.ClaudeArgs...), sessionArgs(&sess)...)
+	if err := h.StartAgent(name, "claude", claudePane.ID, args...); err != nil && !herdr.IsCode(err, herdr.CodeAgentNotReady) {
 		sess.Err = err.Error()
 	}
 	return sess, nil
 }
 
-func EnsureAgent(h Herdr, snap Snapshot, sess session.Session, args []string) (name string, started bool, err error) {
+func EnsureAgent(h Herdr, snap Snapshot, sess *session.Session, args []string) (name string, started bool, err error) {
 	if sess.Workspace == "" {
 		return "", false, errors.New("workspace fechado — abra de novo com w")
 	}
@@ -200,10 +220,19 @@ func EnsureAgent(h Herdr, snap Snapshot, sess session.Session, args []string) (n
 		return "", false, err
 	}
 	name = herdr.UniqueName(herdr.AgentName(sess.Name()), snap.nameTaken)
+	args = append(append([]string{}, args...), sessionArgs(sess)...)
 	if err := h.StartAgent(name, "claude", pane.ID, args...); err != nil && !herdr.IsCode(err, herdr.CodeAgentNotReady) {
 		return "", false, err
 	}
 	return name, true, nil
+}
+
+func sessionArgs(sess *session.Session) []string {
+	if sess.ClaudeSession != "" && claude.TranscriptPath(sess.ClaudeSession) != "" {
+		return []string{"--resume", sess.ClaudeSession}
+	}
+	sess.ClaudeSession = claude.NewSessionID()
+	return []string{"--session-id", sess.ClaudeSession}
 }
 
 func Deliver(h Herdr, snap Snapshot, sess *session.Session) (bool, error) {

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/timmers/wmonit/internal/claude"
 	"github.com/timmers/wmonit/internal/config"
@@ -44,7 +44,7 @@ func poll(t *testing.T, m Model) Model {
 	return mm.(Model)
 }
 
-func press(t *testing.T, m Model, key tea.KeyMsg) (Model, tea.Cmd) {
+func press(t *testing.T, m Model, key tea.KeyPressMsg) (Model, tea.Cmd) {
 	t.Helper()
 	mm, cmd := m.Update(key)
 	return mm.(Model), cmd
@@ -61,7 +61,10 @@ func settle(m Model, h hub.Herdr) (Model, []tea.Cmd) {
 	return m, cmds
 }
 
-func runes(s string) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)} }
+func runes(s string) tea.KeyPressMsg {
+	r := []rune(s)
+	return tea.KeyPressMsg{Code: r[0], Text: s}
+}
 
 func deliver(t *testing.T, m Model, cmd tea.Cmd) Model {
 	t.Helper()
@@ -104,7 +107,7 @@ func TestWorkspaceRowsAndView(t *testing.T) {
 			t.Errorf("view sem %q:\n%s", want, view)
 		}
 	}
-	if out := m.View(); !strings.Contains(out, "Workspaces") {
+	if out := m.render(); !strings.Contains(out, "Workspaces") {
 		t.Error("aba sem o nome Workspaces")
 	}
 }
@@ -155,12 +158,12 @@ type readyHerdr struct {
 	prompted string
 }
 
-func (r *readyHerdr) Agents() ([]herdr.Agent, error) {
-	agents, err := r.Herdr.Agents()
-	for i := range agents {
-		agents[i].Status = herdr.StatusIdle
+func (r *readyHerdr) State() (herdr.State, error) {
+	st, err := r.Herdr.State()
+	for i := range st.Agents {
+		st.Agents[i].Status = herdr.StatusIdle
 	}
-	return agents, err
+	return st, err
 }
 
 func (r *readyHerdr) Prompt(agent, text string) error {
@@ -190,16 +193,13 @@ func TestCreateFreeWorkspace(t *testing.T) {
 	m, h := newWorkspaceModel(t, cfg, nil)
 
 	m, _ = press(t, m, runes("n"))
-	if m.mode != modePicking || len(m.sui.pick.values) != 1 {
-		t.Fatalf("esperava a escolha de repositório: mode=%v pick=%+v", m.mode, m.sui.pick)
+	f := m.sui.form
+	if m.mode != modeForm || f == nil || f.repo != "svc" {
+		t.Fatalf("esperava o formulário de criação: mode=%v form=%+v", m.mode, f)
 	}
-	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
-	if m.mode != modeDescribing {
-		t.Fatalf("mode = %v", m.mode)
-	}
-	m.sui.descInput.SetValue("ajustar o rodapé\ncom o novo selo")
-	m, cmd := press(t, m, tea.KeyMsg{Type: tea.KeyCtrlD})
-	m = deliver(t, m, cmd)
+	f.note = "ajustar o rodapé\ncom o novo selo"
+	mm, cmd := m.submitForm(f)
+	m = deliver(t, mm.(Model), cmd)
 
 	if len(m.sess.Sessions) != 1 {
 		t.Fatalf("sessão não criada: %s", m.sui.info)
@@ -225,8 +225,8 @@ func TestCreateFreeWorkspace(t *testing.T) {
 	if out, _ := cmd2.Output(); strings.TrimSpace(string(out)) != "" {
 		t.Errorf("o arquivo da tarefa deveria ficar fora do git: %s", out)
 	}
-	if ws, _ := h.Workspaces(); ws[len(ws)-1].Label != "svc" {
-		t.Errorf("workspace não criado no herdr: %+v", ws)
+	if st, _ := h.State(); st.Workspaces[len(st.Workspaces)-1].Label != "svc" {
+		t.Errorf("workspace não criado no herdr: %+v", st.Workspaces)
 	}
 }
 
@@ -261,7 +261,7 @@ func TestAdoptAndLink(t *testing.T) {
 			break
 		}
 	}
-	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = press(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	s := m.sess.Sessions[0]
 	if s.Issue != issue || s.Key != issue || s.URL != "https://jira/browse/"+issue {
 		t.Fatalf("link = %+v", s)
@@ -291,7 +291,12 @@ func TestAskHubWritesDigestAndReadsReply(t *testing.T) {
 		t.Fatal("agent de pendências não foi criado")
 	}
 
-	if err := os.WriteFile(filepath.Join(m.hubDir(), claude.ReplyFile), []byte("## Travado\n\n- hades-9470 espera você"), 0o644); err != nil {
+	reply := filepath.Join(m.hubDir(), claude.ReplyFile)
+	if err := os.WriteFile(reply, []byte("## Travado\n\n- hades-9470 espera você"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	later := time.Now().Add(time.Second)
+	if err := os.Chtimes(reply, later, later); err != nil {
 		t.Fatal(err)
 	}
 	m = poll(t, m)
@@ -337,13 +342,14 @@ func TestCreateIssueWorkspaceOnlyContext(t *testing.T) {
 	m.tab = tabJira
 	mm, _ := m.startSession(&focusItem{issue: &issue})
 	m = mm.(Model)
-	if m.mode != modePicking || m.tab != tabSessoes {
-		t.Fatalf("esperava a escolha de repositório na aba Workspaces: mode=%v tab=%v", m.mode, m.tab)
+	f := m.sui.form
+	if m.mode != modeForm || m.tab != tabSessoes || f == nil || f.branch != "feature/"+issue.Key {
+		t.Fatalf("esperava o formulário na aba Workspaces: mode=%v tab=%v form=%+v", m.mode, m.tab, f)
 	}
-	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyEnter})
-	m.sui.descInput.SetValue("só abrir por enquanto")
-	m, cmd := press(t, m, tea.KeyMsg{Type: tea.KeyCtrlN})
-	m = deliver(t, m, cmd)
+	f.note = "só abrir por enquanto"
+	f.action = actionCreate
+	mm, cmd := m.submitForm(f)
+	m = deliver(t, mm.(Model), cmd)
 
 	if len(m.sess.Sessions) != 1 {
 		t.Fatalf("sessão não criada: %s", m.sui.info)
@@ -385,21 +391,21 @@ func TestCreateIssueWorkspaceOnlyContext(t *testing.T) {
 	}
 }
 
-func TestPickerScrollsWithCursor(t *testing.T) {
-	sources := t.TempDir()
-	for i := 0; i < 60; i++ {
-		if err := os.MkdirAll(filepath.Join(sources, fmt.Sprintf("repo-%02d", i), ".git"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	m, _ := newWorkspaceModel(t, config.Config{Claude: config.Claude{SourcesDir: sources}}, nil)
+func TestPickerScrollsAndFilters(t *testing.T) {
+	m, _ := newWorkspaceModel(t, config.Config{}, nil)
 	mm, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 20})
 	m = mm.(Model)
-	m, _ = press(t, m, runes("n"))
-	if m.mode != modePicking {
-		t.Fatalf("mode = %v", m.mode)
+	var labels, values []string
+	for i := 0; i < 60; i++ {
+		name := fmt.Sprintf("repo-%02d", i)
+		labels = append(labels, name)
+		values = append(values, "issue:"+name)
 	}
-	visible := func(name string) bool { return strings.Contains(m.View(), name) }
+	m.sui.pick = pickState{purpose: pickLink, title: "escolha", labels: labels, plain: labels, values: values}
+	m.mode = modePicking
+	m.tab = tabSessoes
+
+	visible := func(name string) bool { return strings.Contains(m.render(), name) }
 	if !visible("repo-00") || visible("repo-40") {
 		t.Fatal("começo da lista deveria estar na tela, o fim não")
 	}
@@ -407,18 +413,37 @@ func TestPickerScrollsWithCursor(t *testing.T) {
 		m, _ = press(t, m, runes("j"))
 	}
 	if !visible("repo-40") || visible("repo-00") {
-		t.Fatalf("a tela deveria acompanhar o cursor (offset %d)", m.vp.YOffset)
+		t.Fatalf("a tela deveria acompanhar o cursor (offset %d)", m.vp.YOffset())
 	}
-	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyEnd})
+	m, _ = press(t, m, tea.KeyPressMsg{Code: tea.KeyEnd})
 	if m.sui.pick.cursor != 59 || !visible("repo-59") {
 		t.Fatalf("end: cursor %d", m.sui.pick.cursor)
 	}
-	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyPgUp})
+	m, _ = press(t, m, tea.KeyPressMsg{Code: tea.KeyPgUp})
 	if m.sui.pick.cursor >= 59 || !visible(fmt.Sprintf("repo-%02d", m.sui.pick.cursor)) {
 		t.Fatalf("pgup: cursor %d", m.sui.pick.cursor)
 	}
-	m, _ = press(t, m, tea.KeyMsg{Type: tea.KeyHome})
+	m, _ = press(t, m, tea.KeyPressMsg{Code: tea.KeyHome})
 	if m.sui.pick.cursor != 0 || !visible("repo-00") {
 		t.Fatalf("home: cursor %d", m.sui.pick.cursor)
+	}
+
+	m, _ = press(t, m, runes("/"))
+	for _, r := range "rp42" {
+		m, _ = press(t, m, runes(string(r)))
+	}
+	if vis := m.sui.pick.visible(); len(vis) == 0 || m.sui.pick.plain[vis[0]] != "repo-42" {
+		t.Fatalf("filtro fuzzy: %v", vis)
+	}
+	if visible("repo-00") || !visible("repo-42") {
+		t.Fatal("a tela deveria mostrar só o que casa com o filtro")
+	}
+	m, _ = press(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.sui.pick.filtering || m.sui.pick.query != "rp42" {
+		t.Fatalf("enter deveria fixar o filtro: %+v", m.sui.pick)
+	}
+	m, _ = press(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.mode != modeNormal {
+		t.Fatalf("enter deveria escolher, mode = %v", m.mode)
 	}
 }

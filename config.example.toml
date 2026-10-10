@@ -5,7 +5,8 @@
 
 [gitlab]
 url = "https://gitlab.nelogica.com.br" # ajuste para a URL real do GitLab da Nelogica
-token = ""                             # Personal Access Token com scope read_api
+token = ""                             # Personal Access Token: read_api basta para ler; api para abrir MR com s
+draft_mr = false                       # MRs abertos com s nascem como draft
 
 [jira]
 url = "https://jira.nelogica.com.br" # ajuste para a URL real do Jira
@@ -27,6 +28,12 @@ status_order = [
 # (procura um campo cujo nome contenha "complex").
 complexity_field = ""
 
+# Transições automáticas (nome do status de destino; vazio = não mexe):
+# start_transition ao criar o workspace de uma issue, review_transition ao
+# entregar com s.
+start_transition = ""
+review_transition = ""
+
 # Metas semanais opcionais — viram barras de progresso na aba Desempenho.
 # Deixe 0 (ou omita a seção) para não exibir.
 [goals]
@@ -43,11 +50,27 @@ branch_prefix = ""         # prefixo da branch de workspaces de issue (ex.: "fea
 # --permission-mode). Vazio = os do seu settings.json.
 model = ""
 permission_mode = ""
+models = ["opus", "sonnet", "haiku"]  # opções do formulário de criação
 
-# Instruções extras por serviço, anexadas à tarefa de cada workspace.
+# Instruções extras anexadas à tarefa de todo workspace…
+template = ""
+# …e por serviço (o .wmonit.toml do repositório também pode ter um template).
 # [claude.templates]
 # hades = "O roteamento fica em src/router; siga o padrão dos handlers existentes."
+
+# Preço em US$ por milhão de tokens, para estimar o custo de cada conversa.
+# A chave casa com parte do nome do modelo (ex.: "opus" casa com
+# "claude-opus-5-5"). Sem preços, só os tokens aparecem.
+# [claude.prices.opus]
+# input = 0.0
+# output = 0.0
+# cache_read = 0.0
+# cache_write = 0.0
 
 [herdr]
 bin = "herdr"      # binário do herdr
 editor = "nvim ."  # comando da aba de editor de cada workspace
+session = ""       # sessão nomeada do herdr (vazio = a padrão)
+events = true      # assina os eventos do herdr pelo socket (sem isso, só polling)
+metadata = true    # publica Jira/MR/CI/git de cada tarefa na sidebar do herdr
+notify = "desktop" # desktop | herdr | both

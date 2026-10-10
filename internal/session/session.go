@@ -47,6 +47,8 @@ type Session struct {
 	Workspace     string     `json:"workspace,omitempty"`
 	Agent         string     `json:"agent,omitempty"`
 	PendingPrompt string     `json:"pending_prompt,omitempty"`
+	ClaudeSession string     `json:"claude_session,omitempty"`
+	Model         string     `json:"model,omitempty"`
 	Status        Status     `json:"status"`
 	Created       time.Time  `json:"created"`
 	Finished      *time.Time `json:"finished,omitempty"`
