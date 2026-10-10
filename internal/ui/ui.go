@@ -105,6 +105,7 @@ type Model struct {
 	detail detailState
 	sui    sessionUI
 	live   liveState
+	help   helpState
 
 	cursor  int
 	addErr  string
@@ -338,6 +339,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.sui.form != nil {
 			m.sui.form.form.WithWidth(max(40, m.vp.Width()-2))
 		}
+		if m.help.open {
+			w, h := m.helpSize()
+			m.help.vp.SetWidth(w - 4)
+			m.help.vp.SetHeight(h - 6)
+		}
 		return m, nil
 
 	case spinner.TickMsg:
@@ -405,7 +411,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case configEditedMsg:
+		return m.reloadConfig(msg)
+
 	case tea.KeyPressMsg:
+		if m.help.open {
+			return m.updateHelp(msg)
+		}
+		if msg.String() == "?" && m.mode != modeForm && m.mode != modeDescribing && m.mode != modeAdding && m.mode != modeFiltering && !m.sui.pick.filtering {
+			return m.openHelp()
+		}
 		switch m.mode {
 		case modeForm:
 			return m.updateForm(msg)

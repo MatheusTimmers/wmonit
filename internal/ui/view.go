@@ -158,7 +158,11 @@ func fmtNum(p float64) string {
 }
 
 func (m Model) View() tea.View {
-	v := tea.NewView(m.render())
+	content := m.render()
+	if m.help.open {
+		content = overlay(content, m.helpView(), m.width, m.height)
+	}
+	v := tea.NewView(content)
 	v.AltScreen = true
 	v.WindowTitle = m.windowTitle()
 	return v
@@ -269,7 +273,7 @@ func (m Model) footer(vp interface{ ScrollPercent() float64 }) string {
 	if m.mode == modeFiltering {
 		return dim.Render(" buscar: ") + m.filterInput.View() + dim.Render("  (enter aplica · esc limpa)")
 	}
-	help := "tab/1-6 abas · g relatório do dia · j/k rolar · r atualizar · q sair"
+	help := "tab/1-6 abas · g relatório · r atualizar · ? atalhos e config · q sair"
 	if m.mode == modeForm {
 		help = "tab/enter próximo · shift+tab anterior · / filtra a lista · esc cancela"
 	} else if m.mode == modeDescribing {
@@ -277,18 +281,18 @@ func (m Model) footer(vp interface{ ScrollPercent() float64 }) string {
 	} else if m.mode == modePicking {
 		help = "j/k escolher · / filtrar · pgup/pgdn página · home/end início/fim · enter confirmar · esc cancelar"
 	} else if m.mode == modeDetail {
-		help = "esc/q voltar · o abrir no navegador · j/k rolar"
+		help = "esc/q voltar · o navegador · j/k rolar · ? atalhos"
 	} else if m.mode == modeReport {
 		help = "esc/q voltar · j/k rolar · r atualizar"
 	} else if m.tab == tabGitLab || m.tab == tabJira {
-		help = "j/k selecionar · enter detalhes · o navegador · c workspace · / buscar · r atualizar · q sair"
+		help = "j/k selecionar · enter detalhes · c workspace · o navegador · / buscar · ? atalhos"
 	} else if m.tab == tabSessoes {
-		help = "n novo · a abrir no herdr · p mensagem · i pendências · enter detalhes · s entregar (push+MR) · L ligar · u adotar · w reabrir · x esc · v diff · o link · f/F concluir · C limpar · d/D remover"
+		help = "n novo · enter detalhes · a abrir · p mensagem · i pendências · s entregar · f concluir · ? todos os atalhos"
 	} else if m.tab == tabTarefas {
 		if m.mode == modeAdding {
 			help = "enter salvar · esc cancelar"
 		} else {
-			help = "a adicionar · espaço concluir · d apagar · j/k navegar · tab/1-6 abas · q sair"
+			help = "a adicionar · espaço concluir · d apagar · j/k navegar · ? atalhos · q sair"
 		}
 	}
 	status := ""

@@ -216,6 +216,9 @@ workspace de issue, ela vai para `start_transition`. Workspaces cujo MR foi
 mergeado/fechado ou cuja issue foi resolvida ganham um aviso 🧹; `C` mostra
 quais são e, apertado de novo, conclui todos.
 
+`?` abre um popup com todos os atalhos e a config em uso (aba 2; `e` edita o
+arquivo e recarrega ao sair).
+
 Na aba Workspaces:
 
 - `enter` — detalhes: links, git, MR, conversa do Claude, sua explicação e a
@@ -262,7 +265,7 @@ Para abrir com uma tecla, no `config.toml` do herdr:
 
 ```toml
 [[keys.command]]
-key = "prefix+w"
+key = "prefix+m"
 type = "plugin_action"
 command = "wmonit.open"
 description = "wmonit"

@@ -106,7 +106,7 @@ const pluginHelp = `
 Para abrir o wmonit num popup com uma tecla, adicione ao ~/.config/herdr/config.toml:
 
   [[keys.command]]
-  key = "prefix+w"
+  key = "prefix+m"
   type = "plugin_action"
   command = "wmonit.open"
   description = "wmonit"
