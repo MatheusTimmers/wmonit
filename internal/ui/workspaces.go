@@ -1114,7 +1114,6 @@ func (m Model) openRowDetail(r wsRow) (tea.Model, tea.Cmd) {
 	m.detail = detailState{loading: true}
 	h := m.hr
 	agent, hasAgent := m.rowAgent(r)
-	wrap := m.wrapText
 	if r.kind == rowOther {
 		m.detail.title = "workspace " + r.other.Label
 		return m, func() tea.Msg {
@@ -1127,93 +1126,9 @@ func (m Model) openRowDetail(r wsRow) (tea.Model, tea.Cmd) {
 			return detailMsg{body: body}
 		}
 	}
-	s := r.sess
-	m.detail.title = s.Name()
-	m.detail.url = s.URL
-	links := m.linksText(s)
-	state := m.stateLabel(r)
-	_, ref := m.sessionMR(s)
-	st := m.live.mrStatus[ref]
-	usage := m.usageText
-	return m, func() tea.Msg {
-		var b strings.Builder
-		b.WriteString(state + "  " + warnStyle.Render(s.Name()) + " " + s.Title + "\n")
-		meta := []string{s.Service}
-		if s.Branch != "" {
-			meta = append(meta, s.Branch)
-		}
-		if s.IsReview() {
-			meta = append(meta, "revisão de MR")
-		}
-		b.WriteString(dim.Render(strings.Join(meta, " · ")) + "\n")
-		if links != "" {
-			b.WriteString(links + "\n")
-		}
-		dir := s.Worktree
-		if dir == "" {
-			dir = s.Repo
-		}
-		b.WriteString(dim.Render(dir) + "\n\n")
-		if s.Err != "" {
-			b.WriteString(errStyle.Render(s.Err) + "\n\n")
-		}
-		if s.PendingPrompt != "" {
-			b.WriteString(warnStyle.Render("⏳ pedido aguardando o Claude ficar livre") + "\n\n")
-		}
-		if info, err := worktree.Inspect(dir); err == nil {
-			line := fmt.Sprintf("🌿 %s", info.Branch)
-			if info.Base != "" {
-				line += fmt.Sprintf(" · %d commit(s) desde %s", len(info.Commits), info.Base)
-			}
-			line += fmt.Sprintf(" · %d arquivo(s) não commitado(s)", len(info.Dirty))
-			b.WriteString(section.Render(line) + "\n")
-			for _, c := range info.Commits {
-				b.WriteString("  " + c + "\n")
-			}
-			b.WriteString("\n")
-		}
-		if n := strings.TrimSpace(s.UserNote); n != "" {
-			b.WriteString(section.Render("📝 Sua explicação") + "\n" + wrap(n) + "\n\n")
-		}
-		if st != nil {
-			b.WriteString(section.Render("🔀 MR "+ref) + "\n")
-			if p := st.Problems(); len(p) > 0 {
-				for _, x := range p {
-					b.WriteString("  • " + x + "\n")
-				}
-			} else if st.Ready() {
-				b.WriteString("  " + okStyle.Render("pronto para merge") + "\n")
-			}
-			if st.HeadPipeline != nil && st.HeadPipeline.WebURL != "" {
-				b.WriteString(dim.Render("  pipeline "+st.HeadPipeline.Status+": "+st.HeadPipeline.WebURL) + "\n")
-			}
-			b.WriteString("\n")
-		}
-		if path := claude.TranscriptPath(s.ClaudeSession); path != "" {
-			if u, err := claude.ReadUsage(path); err == nil {
-				b.WriteString(section.Render("💬 Conversa do Claude") + "  " + dim.Render(usage(u)) + "\n")
-				if u.Title != "" {
-					b.WriteString("  " + u.Title + "\n")
-				}
-				if u.Model != "" {
-					b.WriteString(dim.Render("  modelo "+u.Model) + "\n")
-				}
-				if u.LastTool != "" {
-					b.WriteString(dim.Render("  última ferramenta "+u.LastTool) + "\n")
-				}
-				if t := strings.TrimSpace(u.LastText); t != "" {
-					b.WriteString(wrap(truncate(t, 600)) + "\n")
-				}
-				b.WriteString(dim.Render("  "+s.ClaudeSession) + "\n\n")
-			}
-		}
-		if hasAgent {
-			if screen, err := h.Read(agent.Name, screenLines); err == nil {
-				b.WriteString(section.Render("🖥 Tela do Claude ("+agent.Name+")") + "\n" + screen + "\n")
-			}
-		}
-		return detailMsg{body: b.String()}
-	}
+	m.detail.title = r.sess.Name()
+	m.detail.url = m.sessionURL(r.sess)
+	return m, m.sessionDetailCmd(r)
 }
 
 func (m Model) openDiff(s session.Session) (tea.Model, tea.Cmd) {

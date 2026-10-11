@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Worktree é uma entrada de `git worktree list`.
@@ -263,10 +264,15 @@ func baseBranch(path string) string {
 }
 
 type Info struct {
-	Branch  string
-	Base    string
-	Commits []string
-	Dirty   []string
+	Branch     string
+	Base       string
+	Commits    []string
+	Dirty      []string
+	Upstream   string
+	Ahead      int
+	Behind     int
+	LastCommit string
+	LastAt     time.Time
 }
 
 func Inspect(path string) (Info, error) {
@@ -285,6 +291,23 @@ func Inspect(path string) (Info, error) {
 	}
 	if status, err := git(path, "status", "--porcelain"); err == nil {
 		info.Dirty = nonEmptyLines(status)
+	}
+	if up, err := git(path, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"); err == nil {
+		info.Upstream = strings.TrimSpace(up)
+		if counts, err := git(path, "rev-list", "--left-right", "--count", "@{u}...HEAD"); err == nil {
+			_, _ = fmt.Sscanf(strings.TrimSpace(counts), "%d %d", &info.Behind, &info.Ahead)
+		}
+	}
+	if last, err := git(path, "log", "-1", "--format=%ct %h %s"); err == nil {
+		var ts int64
+		var rest string
+		if n, _ := fmt.Sscanf(strings.TrimSpace(last), "%d", &ts); n == 1 {
+			info.LastAt = time.Unix(ts, 0)
+			if _, after, ok := strings.Cut(strings.TrimSpace(last), " "); ok {
+				rest = after
+			}
+			info.LastCommit = rest
+		}
 	}
 	return info, nil
 }

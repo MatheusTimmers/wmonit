@@ -2,6 +2,7 @@ package worktree
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -235,5 +236,37 @@ func TestInspect(t *testing.T) {
 func TestInspectNeedsPath(t *testing.T) {
 	if _, err := Inspect(""); err == nil {
 		t.Fatal("Inspect sem pasta não deveria olhar o diretório atual")
+	}
+}
+
+func TestInspectUpstream(t *testing.T) {
+	root := t.TempDir()
+	run := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	remote := filepath.Join(root, "r.git")
+	run(root, "init", "-q", "--bare", "-b", "main", remote)
+	repo := filepath.Join(root, "w")
+	run(root, "clone", "-q", remote, repo)
+	run(repo, "config", "user.email", "t@t")
+	run(repo, "config", "user.name", "t")
+	run(repo, "commit", "-q", "--allow-empty", "-m", "base")
+	run(repo, "push", "-q", "-u", "origin", "main")
+	run(repo, "commit", "-q", "--allow-empty", "-m", "local um")
+	run(repo, "commit", "-q", "--allow-empty", "-m", "local dois")
+	info, err := Inspect(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Upstream != "origin/main" || info.Ahead != 2 || info.Behind != 0 {
+		t.Fatalf("upstream = %+v", info)
+	}
+	if !strings.HasSuffix(info.LastCommit, "local dois") || info.LastAt.IsZero() {
+		t.Fatalf("último commit = %q %v", info.LastCommit, info.LastAt)
 	}
 }
