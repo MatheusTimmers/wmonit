@@ -273,27 +273,10 @@ func (m Model) footer(vp interface{ ScrollPercent() float64 }) string {
 	if m.mode == modeFiltering {
 		return dim.Render(" buscar: ") + m.filterInput.View() + dim.Render("  (enter aplica · esc limpa)")
 	}
-	help := "tab/1-6 abas · g relatório · r atualizar · ? atalhos e config · q sair"
-	if m.mode == modeForm {
-		help = "tab/enter próximo · shift+tab anterior · / filtra a lista · esc cancela"
-	} else if m.mode == modeDescribing {
-		help = "ctrl+d envia · ctrl+e editor · esc cancela"
-	} else if m.mode == modePicking {
-		help = "j/k escolher · / filtrar · pgup/pgdn página · home/end início/fim · enter confirmar · esc cancelar"
-	} else if m.mode == modeDetail {
-		help = "esc/q voltar · o navegador · j/k rolar · ? atalhos"
-	} else if m.mode == modeReport {
-		help = "esc/q voltar · j/k rolar · r atualizar"
-	} else if m.tab == tabGitLab || m.tab == tabJira {
-		help = "j/k selecionar · enter detalhes · c workspace · o navegador · / buscar · ? atalhos"
-	} else if m.tab == tabSessoes {
-		help = "n novo · enter detalhes · a abrir · p mensagem · i pendências · s entregar · f concluir · ? todos os atalhos"
-	} else if m.tab == tabTarefas {
-		if m.mode == modeAdding {
-			help = "enter salvar · esc cancelar"
-		} else {
-			help = "a adicionar · espaço concluir · d apagar · j/k navegar · ? atalhos · q sair"
-		}
+	help := "? atalhos"
+	switch m.mode {
+	case modeForm, modeDescribing, modeAdding:
+		help = ""
 	}
 	status := ""
 	if m.fetch.loading > 0 {
@@ -304,7 +287,7 @@ func (m Model) footer(vp interface{ ScrollPercent() float64 }) string {
 	if p := vp.ScrollPercent(); p < 1 {
 		status += dim.Render(fmt.Sprintf(" · %d%%", int(p*100)))
 	}
-	foot := dim.Render(" " + help + "   " + status)
+	foot := dim.Render(" " + strings.TrimSpace(help+"   "+status))
 	if m.badge != "" {
 		foot = alertStyle.Render(" "+m.badge+" ") + foot
 	}
