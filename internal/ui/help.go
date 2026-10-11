@@ -54,6 +54,7 @@ var keySections = []keySection{
 		{"a", "abrir o workspace no herdr"},
 		{"p", "mandar mensagem ao Claude do workspace"},
 		{"x", "mandar esc ao Claude (interromper)"},
+		{"t", "confirmar a pasta quando o Claude pede (🔐)"},
 		{"i", "pedir a análise de pendências"},
 		{"s", "entregar: push, MR no GitLab, issue para revisão"},
 		{"C (duas vezes)", "concluir os que têm MR mergeado ou issue resolvida"},

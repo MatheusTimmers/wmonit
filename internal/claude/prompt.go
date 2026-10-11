@@ -2,6 +2,7 @@ package claude
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -115,18 +116,18 @@ func Kickoff() string {
 	return fmt.Sprintf("Leia o arquivo %s na raiz do projeto: ele traz a tarefa e as instruções. Siga-as.", TaskFile)
 }
 
-func DigestHeader() string {
+func DigestHeader(dir string) string {
 	var b strings.Builder
 	b.WriteString("# Pendências\n\n")
 	b.WriteString("Você é meu assistente de pendências. Abaixo está o estado de tudo o que eu tenho em aberto: os workspaces do herdr (cada um é uma tarefa, com um Claude trabalhando nela), as issues do Jira, os MRs do GitLab e as minhas tarefas locais.\n\n")
-	fmt.Fprintf(&b, "Escreva em %s (sobrescreva o arquivo inteiro), em markdown, com títulos curtos:\n\n", ReplyFile)
+	fmt.Fprintf(&b, "Escreva em %s (sobrescreva o arquivo inteiro), em markdown, com títulos curtos:\n\n", filepath.Join(dir, ReplyFile))
 	b.WriteString("1. **Travado** — cada pendência que está parada ou esperando algo: o que trava e como destravar, em passos concretos (quem eu preciso acionar, o que responder ao agent, o que revisar).\n")
 	b.WriteString("2. **Próximos passos** — em ordem de prioridade: o que eu faço agora, o que posso delegar a um agent (diga o workspace e o pedido exato) e o que pode esperar.\n")
 	b.WriteString("3. **Riscos** — prazos vencendo, MRs parados, trabalho duplicado entre workspaces.\n\n")
-	b.WriteString("Seja direto. Para investigar, você pode ler a tela de um agent com `herdr agent read <nome> --source recent-unwrapped --lines 120` e olhar os repositórios com git (só leitura). NÃO mande prompts para outros agents, NÃO altere código e NÃO mexa em workspaces sem eu pedir.\n\n")
+	b.WriteString("Seja direto: o que está abaixo já basta na maioria dos casos. Se precisar investigar, use só leitura: `herdr agent read <nome> --source recent-unwrapped --lines 120` para ver a tela de um agent e, nos repositórios, `git status`, `git log`, `git diff` ou `git show` dentro da pasta. Esses comandos e a leitura de arquivos já estão liberados. NÃO mande prompts para outros agents, NÃO altere código e NÃO mexa em workspaces sem eu pedir.\n\n")
 	return b.String()
 }
 
-func DigestKickoff() string {
-	return fmt.Sprintf("Atualizei o %s. Leia o arquivo inteiro e siga as instruções do topo, escrevendo a resposta em %s.", DigestFile, ReplyFile)
+func DigestKickoff(dir string) string {
+	return fmt.Sprintf("Atualizei o %s. Leia o arquivo inteiro e siga as instruções do topo, escrevendo a resposta em %s.", filepath.Join(dir, DigestFile), filepath.Join(dir, ReplyFile))
 }

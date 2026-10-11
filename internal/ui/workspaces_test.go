@@ -121,8 +121,8 @@ func TestNotifiesWhenAgentBlocks(t *testing.T) {
 			snap.Agents[i].Status = herdr.StatusBlocked
 		}
 	}
-	if cmds := m.applySnapshot(snap); len(cmds) != 1 {
-		t.Fatalf("esperava 1 notificação, veio %d", len(cmds))
+	if cmds := m.applySnapshot(snap); len(cmds) != 2 {
+		t.Fatalf("esperava a notificação e a checagem da tela, veio %d", len(cmds))
 	}
 	if cmds := m.applySnapshot(snap); len(cmds) != 0 {
 		t.Fatalf("sem mudança não notifica de novo: %d", len(cmds))
@@ -278,11 +278,20 @@ func TestAskHubWritesDigestAndReadsReply(t *testing.T) {
 	if !m.sui.hubPending {
 		t.Fatalf("hub recém-criado deveria ficar com o pedido pendente: %s", m.sui.info)
 	}
+	if req, ok := hub.LoadRequest(m.hubDir()); !ok || !req.Pending {
+		t.Fatalf("o pedido pendente deveria ficar gravado: %+v", req)
+	}
 	m, cmds := settle(m, h)
-	if len(cmds) != 1 || m.sui.hubPending {
-		t.Fatalf("esperava o envio ao hub: %d cmds, pending=%v", len(cmds), m.sui.hubPending)
+	if len(cmds) != 1 || !m.sui.hubKicking {
+		t.Fatalf("esperava o envio ao hub: %d cmds, kicking=%v", len(cmds), m.sui.hubKicking)
 	}
 	m = deliver(t, m, cmds[0])
+	if m.sui.hubPending || m.sui.hubKicking {
+		t.Fatal("depois do envio o pedido não está mais pendente")
+	}
+	if req, _ := hub.LoadRequest(m.hubDir()); req.Pending {
+		t.Fatal("o arquivo do pedido deveria registrar o envio")
+	}
 	digest, err := os.ReadFile(filepath.Join(m.hubDir(), claude.DigestFile))
 	if err != nil || !strings.Contains(string(digest), "### hades-9470") || !strings.Contains(string(digest), "Do you want to make this edit") {
 		t.Fatalf("digest = %s, %v", digest, err)

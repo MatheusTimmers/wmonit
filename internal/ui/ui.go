@@ -171,6 +171,8 @@ type sessionUI struct {
 	hubReply     string
 	hubWaiting   bool
 	hubPending   bool
+	hubKicking   bool
+	trust        map[string][]string
 }
 
 func New(cfg config.Config, store *tasks.Store, hist *history.Store, sess *session.Store, gl gitlabSource, ji jiraSource, hr hub.Herdr, badge string) Model {
@@ -193,9 +195,14 @@ func New(cfg config.Config, store *tasks.Store, hist *history.Store, sess *sessi
 		lastStatus: map[string]string{},
 		readySince: map[string]time.Time{},
 		delivering: map[string]bool{},
+		trust:      map[string][]string{},
 	}
-	if reply, at, ok := hub.ReadReply(hub.HubDir(sess.Dir()), time.Time{}); ok {
+	hubDir := hub.HubDir(sess.Dir())
+	if reply, at, ok := hub.ReadReply(hubDir, time.Time{}); ok {
 		sui.hubReply, sui.hubAt = reply, at
+	}
+	if req, ok := hub.LoadRequest(hubDir); ok && time.Since(req.Asked) < hubStale && !sui.hubAt.After(req.Asked) {
+		sui.hubAsked, sui.hubWaiting, sui.hubPending = req.Asked, true, req.Pending
 	}
 
 	return Model{

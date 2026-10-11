@@ -41,10 +41,10 @@ func TestKickoffs(t *testing.T) {
 	if !strings.Contains(Kickoff(), TaskFile) {
 		t.Error("Kickoff deveria apontar o arquivo da tarefa")
 	}
-	if k := DigestKickoff(); !strings.Contains(k, DigestFile) || !strings.Contains(k, ReplyFile) {
+	if k := DigestKickoff("/d"); !strings.Contains(k, DigestFile) || !strings.Contains(k, ReplyFile) {
 		t.Errorf("DigestKickoff = %q", k)
 	}
-	if h := DigestHeader(); !strings.Contains(h, ReplyFile) || !strings.Contains(h, "NÃO mande prompts") {
+	if h := DigestHeader("/d"); !strings.Contains(h, ReplyFile) || !strings.Contains(h, "NÃO mande prompts") {
 		t.Errorf("DigestHeader sem instruções:\n%s", h)
 	}
 	if p := FreePrompt("wmonit", "  ajustar o rodapé "); !strings.Contains(p, "wmonit") || !strings.Contains(p, "ajustar o rodapé") {

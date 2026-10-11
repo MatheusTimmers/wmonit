@@ -23,6 +23,13 @@ const (
 	HubTab   = "pendencias"
 )
 
+var HubTools = []string{
+	"Read", "Glob", "Grep",
+	"Bash(herdr agent read *)", "Bash(herdr agent list*)", "Bash(herdr workspace list*)",
+	"Bash(git status*)", "Bash(git log *)", "Bash(git diff *)", "Bash(git show *)", "Bash(git branch*)",
+	"Bash(ls *)", "Bash(cat *)", "Bash(head *)", "Bash(tail *)", "Bash(wc *)",
+}
+
 func HubDir(dataDir string) string { return filepath.Join(dataDir, "pendencias") }
 
 func EnsureHub(h Herdr, snap Snapshot, dir string, args []string) (ready bool, err error) {
@@ -45,7 +52,7 @@ func EnsureHub(h Herdr, snap Snapshot, dir string, args []string) (ready bool, e
 	if err != nil {
 		return false, err
 	}
-	args = append(append([]string{}, args...), "--permission-mode", "acceptEdits")
+	args = append(append([]string{}, args...), "--permission-mode", "acceptEdits", "--allowedTools", strings.Join(HubTools, ","))
 	if err := h.StartAgent(HubAgent, "claude", pane.ID, args...); err != nil && !herdr.IsCode(err, herdr.CodeAgentNotReady) {
 		return false, err
 	}
@@ -65,6 +72,7 @@ type Item struct {
 }
 
 type DigestInput struct {
+	Dir    string
 	Now    time.Time
 	Items  []Item
 	Others []herdr.Workspace
@@ -154,7 +162,7 @@ func Others(snap Snapshot, sessions []session.Session) []herdr.Workspace {
 
 func Digest(in DigestInput) string {
 	var b strings.Builder
-	b.WriteString(claude.DigestHeader())
+	b.WriteString(claude.DigestHeader(in.Dir))
 	fmt.Fprintf(&b, "Gerado em %s.\n\n", in.Now.Format("02/01/2006 15:04"))
 
 	linkedIssues := map[string]bool{}

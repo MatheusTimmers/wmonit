@@ -3,8 +3,11 @@ package demo
 import (
 	"fmt"
 	"maps"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/timmers/wmonit/internal/herdr"
 )
@@ -136,7 +139,13 @@ func (h *Herdr) StartAgent(name, kind, paneID string, _ ...string) error {
 	return nil
 }
 
-func (h *Herdr) Prompt(agent, _ string) error {
+func (h *Herdr) Prompt(agent, text string) error {
+	if path := replyPath(text); path != "" {
+		go func() {
+			time.Sleep(2 * time.Second)
+			_ = os.WriteFile(path, []byte(demoReply), 0o644)
+		}()
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for i := range h.agents {
@@ -157,3 +166,32 @@ func (h *Herdr) Read(agent string, _ int) (string, error) {
 	}
 	return "> ", nil
 }
+
+func replyPath(prompt string) string {
+	const marker = "escrevendo a resposta em "
+	i := strings.Index(prompt, marker)
+	if i < 0 {
+		return ""
+	}
+	path := strings.TrimSuffix(strings.TrimSpace(prompt[i+len(marker):]), ".")
+	if !filepath.IsAbs(path) {
+		return ""
+	}
+	return path
+}
+
+const demoReply = `## Travado
+
+- **hades-9470** — o Claude espera você aprovar uma edição em ` + "`report.go`" + `. Abra o workspace (a) e responda.
+- **rot-512** — o CI do MR backoffice!412 quebrou em ` + "`test-integration`" + ` e há threads abertas. Peça ao Claude: "corrija o test-integration e responda as threads".
+
+## Próximos passos
+
+1. Destravar o hades-9470 (2 min).
+2. Delegar ao rot-512 a correção do CI.
+3. Concluir o rot-498 com C — o MR já foi mergeado.
+
+## Riscos
+
+- ROT-501 vence hoje e ainda não tem workspace.
+`

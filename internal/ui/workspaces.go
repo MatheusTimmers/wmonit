@@ -195,6 +195,7 @@ func (m Model) updateWorkspaces(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		return m, nil, true
 
 	case hubAskedMsg:
+		m.sui.hubKicking = false
 		if msg.err != nil {
 			m.sui.hubWaiting, m.sui.hubPending = false, false
 			m.sui.info = errStyle.Render("pendências: " + msg.err.Error())
@@ -206,14 +207,25 @@ func (m Model) updateWorkspaces(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		}
 		m.sui.hubAsked = msg.at
 		m.sui.hubPending = !msg.ready
+		m.saveHubRequest()
 		if m.mode == modeDetail && m.detail.hub {
 			m.detail.loading = false
 			m.detail.body = m.hubBody()
 		}
-		if !msg.ready {
-			m.sui.info = warnStyle.Render("o agent de pendências está subindo ou ocupado — o pedido vai assim que ele estiver livre (se ele pedir para confirmar a pasta: a na linha 🧭)")
-		}
 		return m, m.pollHerdr(), true
+
+	case hubKickedMsg:
+		m.sui.hubKicking = false
+		if msg.at.Equal(m.sui.hubAsked) {
+			m.sui.hubPending = false
+			m.saveHubRequest()
+		}
+		m.sui.info = dim.Render("pedido enviado ao agent de pendências")
+		return m, m.pollHerdr(), true
+
+	case trustProbeMsg:
+		next, cmd := m.updateTrust(msg)
+		return next, cmd, true
 
 	case shippedMsg:
 		next, cmd := m.updateShip(msg)
@@ -263,6 +275,9 @@ func (m *Model) applySnapshot(snap hub.Snapshot) []tea.Cmd {
 	for _, a := range snap.Agents {
 		statuses[a.Name] = a.Status
 		old, seen := m.sui.lastStatus[a.Name]
+		if cmd := m.probeBlocked(a, old, seen); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 		if !prevOnline || !seen || old == a.Status {
 			continue
 		}
@@ -307,14 +322,17 @@ func (m *Model) applySnapshot(snap hub.Snapshot) []tea.Cmd {
 		}
 	}
 
-	if m.sui.hubPending {
+	if m.sui.hubPending && !m.sui.hubKicking {
 		if stable(hub.HubAgent) {
-			m.sui.hubPending = false
+			m.sui.hubKicking = true
 			cmds = append(cmds, m.hubKickoffCmd())
 		}
 	}
 	if cmd := m.checkHubReply(); cmd != nil {
 		cmds = append(cmds, cmd)
+	}
+	if m.mode == modeDetail && m.detail.hub && !m.detail.loading {
+		m.detail.body = m.hubBody()
 	}
 	return cmds
 }
@@ -1028,6 +1046,7 @@ func (m Model) askHub() (tea.Model, tea.Cmd) {
 			return hubAskedMsg{err: fmt.Errorf("%s", friendlyErr(snap.Err))}
 		}
 		digest := hub.Digest(hub.DigestInput{
+			Dir:    dir,
 			Now:    time.Now(),
 			Items:  hub.Collect(h, snap, sessions, ji, gl, statuses, screenLines),
 			Others: hub.Others(snap, sessions),
@@ -1044,7 +1063,7 @@ func (m Model) askHub() (tea.Model, tea.Cmd) {
 			return hubAskedMsg{err: err}
 		}
 		if ready {
-			if err := h.Prompt(hub.HubAgent, claude.DigestKickoff()); err != nil {
+			if err := h.Prompt(hub.HubAgent, claude.DigestKickoff(dir)); err != nil {
 				if !herdr.IsCode(err, herdr.CodePromptStalled) {
 					return hubAskedMsg{err: err}
 				}
@@ -1058,27 +1077,28 @@ func (m Model) askHub() (tea.Model, tea.Cmd) {
 func (m Model) hubKickoffCmd() tea.Cmd {
 	h := m.hr
 	at := m.sui.hubAsked
+	dir := m.hubDir()
 	return func() tea.Msg {
-		if err := h.Prompt(hub.HubAgent, claude.DigestKickoff()); err != nil {
+		if err := h.Prompt(hub.HubAgent, claude.DigestKickoff(dir)); err != nil {
 			if herdr.IsCode(err, herdr.CodePromptStalled) {
 				return hubAskedMsg{at: at, ready: false}
 			}
 			return hubAskedMsg{err: err}
 		}
-		return infoMsg{info: dim.Render("pedido enviado ao agent de pendências")}
+		return hubKickedMsg{at: at}
 	}
 }
 
 func (m Model) hubBody() string {
 	if strings.TrimSpace(m.sui.hubReply) == "" {
 		if m.sui.hubWaiting {
-			return dim.Render("o agent está analisando as pendências… (a resposta aparece aqui sozinha; a na linha 🧭 acompanha no herdr)")
+			return m.hubState()
 		}
 		return dim.Render("nenhuma análise ainda — i pede uma")
 	}
 	head := dim.Render("análise de " + m.sui.hubAt.Format("02/01 15:04"))
 	if m.sui.hubWaiting {
-		head += warnStyle.Render(" · atualizando…")
+		head += "  " + m.hubState()
 	}
 	return head + "\n\n" + renderMarkdown(m.sui.hubReply, max(40, m.vp.Width()-2))
 }
@@ -1302,6 +1322,13 @@ func (m Model) sessionKeys(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if a, ok := m.rowAgent(*r); ok {
 			return m, m.interruptCmd(a.Name)
 		}
+	case "t":
+		if a, ok := m.rowAgent(*r); ok {
+			if keys, asks := m.sui.trust[a.Name]; asks {
+				delete(m.sui.trust, a.Name)
+				return m, m.confirmTrustCmd(a.Name, keys)
+			}
+		}
 	case "w":
 		if r.kind == rowSession && r.sess.Active() && r.sess.Workspace == "" {
 			m.sui.info = dim.Render("abrindo " + r.sess.Name() + "…")
@@ -1514,8 +1541,10 @@ func (m Model) viewSessoes() (string, int) {
 					write("    " + extra + "\n")
 				}
 			}
-			if s.PendingPrompt != "" && s.Active() {
-				write("    " + warnStyle.Render("⏳ tarefa esperando o Claude ficar livre (confirme a pasta com a)") + "\n")
+			if _, asks := m.sui.trust[s.Agent]; asks && s.Active() {
+				write("    " + alertStyle.Render(" 🔐 o Claude pede para confiar na pasta ") + dim.Render("  t confirma daqui") + "\n")
+			} else if s.PendingPrompt != "" && s.Active() {
+				write("    " + warnStyle.Render("⏳ tarefa esperando o Claude ficar livre") + "\n")
 			}
 			if s.Err != "" && s.Active() {
 				write("    " + errStyle.Render(truncate(s.Err, 160)) + "\n")
